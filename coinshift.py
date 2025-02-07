@@ -32,7 +32,7 @@ class CoinshiftNetwork:
         min_lock: int = 180,
         max_lock: int = 365,
         daily_rewards: float = 100000,
-        reward_decay_rate: float = 0.95,
+        hyperbolic_scale: float = 100,
         withdrawal_prob: float = 0.1,
         max_withdrawal_pct: float = 0.5,
         referral_bonus_pct: float = 0.05,
@@ -46,7 +46,7 @@ class CoinshiftNetwork:
         self.min_lock = min_lock 
         self.max_lock = max_lock
         self.daily_rewards = daily_rewards          
-        self.reward_decay_rate = reward_decay_rate  
+        self.hyperbolic_scale = hyperbolic_scale
         self.referral_bonus_pct = referral_bonus_pct
 
         self.remaining_referral_bonus = total_referral_bonus_pool
@@ -149,7 +149,7 @@ class CoinshiftNetwork:
         if total_tvl == 0:
             return 0
             
-        current_rewards = self.daily_rewards * (self.reward_decay_rate ** self.current_time)
+        current_rewards = self.daily_rewards * (1 / np.cosh(self.current_time / self.hyperbolic_scale))
         
         for node_id in active_nodes:
             node = self.nodes[node_id]

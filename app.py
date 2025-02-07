@@ -1,152 +1,203 @@
 import streamlit as st
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from mc import MonteCarloSimulator
 from coinshift import CoinshiftNetwork
 import pandas as pd
+from viz import (
+    plot_network_metrics, 
+    plot_withdrawal_metrics,
+    plot_monte_carlo_results,
+    display_monte_carlo_metrics
+)
 
-st.set_page_config(page_title="Coinshift Network Simulation", layout="wide")
-st.title("Coinshift Network Simulation")
+import streamlit as st
+from dataclasses import dataclass
+from typing import List, Tuple, Dict, Any
 
-with st.sidebar:
-    st.header("Simulation Parameters")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        n_steps = st.number_input(
-            "Simulation steps", 
-            1, 10000, 365,
-            help="Number of days to simulate. Each step represents one day."
-        )
-        referral_rate = st.number_input(
-            "Referral rate", 
-            0.0, 1.0, 0.05, 0.01,
-            help="Average number of new users each existing user brings per day. A rate of 0.05 means each user brings 1 new user every 20 days on average."
-        )
-        spontaneous_rate = st.number_input(
-            "Spontaneous rate", 
-            0.0, 10.0, 2.0, 0.1,
-            help="Number of new users that join organically per day without referrals."
-        )
-        reward_decay_rate = st.number_input(
-            "Reward decay rate", 
-            0.0, 1.0, 0.99, 0.01,
-            help="Daily decay factor for rewards. A rate of 0.99 means rewards decrease by 1% each day."
-        )
+@dataclass
+class SimulationParams:
+    n_steps: int
+    referral_rate: float
+    spontaneous_rate: float
+    hyperbolic_scale: float
+    initial_nodes: int
+    total_population: int
+    referral_bonus: float
+    withdrawal_prob: float
+    min_deposit: float
+    max_deposit: float
+    referral_pool: float
+    tvl_goals: List[Tuple[float, float]]
+
+def get_simulation_params() -> SimulationParams:
+    with st.sidebar:
+        st.header("Simulation Parameters")
         
-    with col2:
-        initial_nodes = st.number_input(
-            "Initial nodes", 
-            1, 100, 10,
-            help="Number of users at the start of the simulation."
-        )
-        total_population = st.number_input(
-            "Total population", 
-            initial_nodes, 10000, 1000,
-            help="Maximum number of users that can join the network."
-        )
-        referral_bonus = st.number_input(
-            "Referral bonus %", 
-            0.0, 100.0, 5.0, 0.1,
-            help="Percentage of referred user's deposit paid as bonus to referrer."
-        ) / 100
-        withdrawal_prob = st.number_input(
-            "Withdrawal probability", 
-            0.0, 1.0, 0.1, 0.01,
-            help="Chance of a user making a withdrawal on any given day."
-        )
-
-    st.header("Deposit Range")
-    min_deposit = st.number_input(
-        "Min deposit", 
-        0.0, 1e6, 1000.0, 100.0,
-        help="Minimum amount in csUSDL that a user can deposit."
-    )
-    max_deposit = st.number_input(
-        "Max deposit", 
-        min_deposit, 1e8, 10_000.0, 1000.0,
-        help="Maximum amount in csUSDL that a user can deposit."
-    )
-
-    st.header("Referral Pool")
-    referral_pool = st.number_input(
-        "Total referral bonus pool (SHIFT)", 
-        0.0, 1e8, 1_000_000.0, 100_000.0,
-        help="Total amount of SHIFT tokens allocated for referral bonuses. Once depleted, no more referral bonuses are paid."
-    )
-
-    st.header("TVL Goals")
-    num_goals = st.number_input(
-        "Number of TVL goals", 
-        1, 5, 2, 1,
-        help="Number of Total Value Locked (TVL) milestones to track."
-    )
-    
-    tvl_goals = []
-    for i in range(num_goals):
         col1, col2 = st.columns(2)
         with col1:
-            tvl = st.number_input(
-                f"TVL Goal {i+1} (csUSDL)", 
-                min_value=0.0,
-                max_value=1e9,
-                value=1_000_000.0 * (i + 1),
-                step=100_000.0,
-                key=f"tvl_{i}",
-                help=f"Target {i+1} for Total Value Locked in csUSDL. Haircut decreases as TVL approaches this goal."
+            n_steps = st.number_input(
+                "Simulation steps", 
+                1, 10000, 365,
+                help="Number of days to simulate"
             )
+            referral_rate = st.number_input(
+                "Referral rate", 
+                0.0, 1.0, 0.05, 0.01,
+                help="New users per existing user per day"
+            )
+            spontaneous_rate = st.number_input(
+                "Spontaneous rate", 
+                0.0, 10.0, 2.0, 0.1,
+                help="Organic new users per day"
+            )
+            hyperbolic_scale = st.number_input(
+                "Hyperbolic scale",
+                1.0, 1000.0, 100.0, 10.0,
+                help="Controls rewards decay speed"
+            )
+            
         with col2:
-            haircut = st.number_input(
-                f"Initial Haircut {i+1} (%)", 
-                min_value=0.0,
-                max_value=100.0,
-                value=80.0 - i * 20.0,
-                step=5.0,
-                key=f"haircut_{i}",
-                help=f"Starting withdrawal penalty percentage for TVL Goal {i+1}. Decreases linearly as TVL approaches goal."
+            initial_nodes = st.number_input(
+                "Initial nodes", 
+                1, 100, 10,
+                help="Starting number of users"
             )
-        tvl_goals.append((tvl, haircut / 100.0))
-    
-    tvl_goals.sort()  # Sort by TVL target
+            total_population = st.number_input(
+                "Total population", 
+                initial_nodes, 10000, 1000,
+                help="Maximum possible users"
+            )
+            referral_bonus = st.number_input(
+                "Referral bonus %", 
+                0.0, 100.0, 0.0, 0.1,
+                help="Bonus % of referred user's deposit"
+            ) / 100
+            withdrawal_prob = st.number_input(
+                "Withdrawal probability", 
+                0.0, 1.0, 0.1, 0.01,
+                help="Daily withdrawal chance"
+            )
 
-    st.info("""
-        📌 Quick Tips:
-        - Higher referral and spontaneous rates lead to faster network growth
-        - Lower withdrawal probability and higher lock periods help maintain TVL
-        - Withdrawal haircuts decrease as TVL approaches goals
-        - Ensure TVL goals are realistic given the population and deposit ranges
-    """)
+        st.header("Deposit Range")
+        min_deposit = st.number_input(
+            "Min deposit", 
+            0.0, 1e6, 1000.0, 100.0,
+            help="Minimum csUSDL deposit"
+        )
+        max_deposit = st.number_input(
+            "Max deposit", 
+            min_deposit, 1e8, 10_000.0, 1000.0,
+            help="Maximum csUSDL deposit"
+        )
 
-if st.sidebar.button("Run Simulation"):
-    sim = CoinshiftNetwork(
+        st.header("Referral Pool")
+        referral_pool = st.number_input(
+            "Total referral bonus pool (SHIFT)", 
+            0.0, 1e8, 1_000_000.0, 100_000.0,
+            help="Total SHIFT for referral bonuses"
+        )
+
+        st.header("TVL Goals")
+        num_goals = st.number_input(
+            "Number of TVL goals", 
+            1, 5, 2, 1,
+            help="Number of TVL milestones"
+        )
+        
+        tvl_goals = []
+        for i in range(num_goals):
+            col1, col2 = st.columns(2)
+            with col1:
+                tvl = st.number_input(
+                    f"TVL Goal {i+1} (csUSDL)", 
+                    min_value=0.0,
+                    max_value=1e9,
+                    value=1_000_000.0 * (i + 1),
+                    step=100_000.0,
+                    key=f"tvl_{i}"
+                )
+            with col2:
+                haircut = st.number_input(
+                    f"Initial Haircut {i+1} (%)", 
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=80.0 - i * 20.0,
+                    step=5.0,
+                    key=f"haircut_{i}"
+                )
+            tvl_goals.append((tvl, haircut / 100.0))
+        
+        tvl_goals.sort()
+
+    return SimulationParams(
+        n_steps=n_steps,
         referral_rate=referral_rate,
         spontaneous_rate=spontaneous_rate,
+        hyperbolic_scale=hyperbolic_scale,
         initial_nodes=initial_nodes,
         total_population=total_population,
-        tvl_goals=tvl_goals,
+        referral_bonus=referral_bonus,
+        withdrawal_prob=withdrawal_prob,
         min_deposit=min_deposit,
         max_deposit=max_deposit,
-        referral_bonus_pct=referral_bonus,
-        reward_decay_rate=reward_decay_rate,
-        withdrawal_prob=withdrawal_prob,
-        total_referral_bonus_pool=referral_pool
+        referral_pool=referral_pool,
+        tvl_goals=tvl_goals
     )
+
+def get_network_params(params: SimulationParams) -> Dict[str, Any]:
+    return {
+        "referral_rate": params.referral_rate,
+        "spontaneous_rate": params.spontaneous_rate,
+        "initial_nodes": params.initial_nodes,
+        "total_population": params.total_population,
+        "tvl_goals": params.tvl_goals,
+        "min_deposit": params.min_deposit,
+        "max_deposit": params.max_deposit,
+        "referral_bonus_pct": params.referral_bonus,
+        "hyperbolic_scale": params.hyperbolic_scale,
+        "withdrawal_prob": params.withdrawal_prob,
+        "total_referral_bonus_pool": params.referral_pool
+    }
+
+def get_monte_carlo_params(base_params: SimulationParams) -> Dict[str, Any]:
+    col1, col2 = st.columns(2)
+    with col1:
+        n_simulations = st.number_input(
+            "Number of Simulations",
+            min_value=10,
+            max_value=1000,
+            value=100,
+            step=10,
+            help="Number of Monte Carlo simulations"
+        )
+    with col2:
+        max_steps = st.number_input(
+            "Maximum Steps",
+            min_value=100,
+            max_value=10000,
+            value=1000,
+            step=100,
+            help="Maximum simulation days"
+        )
+    
+    network_params = get_network_params(base_params)
+    
+    return {
+        "n_simulations": n_simulations,
+        "max_steps": max_steps,
+        "network_params": network_params
+    }
+
+def run_single_simulation(network_params: dict, n_steps: int):
+    sim = CoinshiftNetwork(**network_params)
     
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     data = {
-        "Time": [], 
-        "TVL": [], 
-        "Active Nodes": [], 
-        "Inactive Nodes": [],
-        "Treasury": [], 
-        "Haircut": [], 
-        "Rewards": [], 
-        "Referral Rewards": [],
-        "Daily Withdrawals": [], 
-        "Withdrawal Count": [], 
-        "Haircut Collected": [],
-        "Net Withdrawn": [],
+        "Time": [], "TVL": [], "Active Nodes": [], "Inactive Nodes": [],
+        "Treasury": [], "Haircut": [], "Rewards": [], "Referral Rewards": [],
+        "Daily Withdrawals": [], "Withdrawal Count": [], 
+        "Haircut Collected": [], "Net Withdrawn": [],
         "Remaining Referral Pool": []
     }
     
@@ -178,247 +229,20 @@ if st.sidebar.button("Run Simulation"):
     tabs = st.tabs(["Network Metrics", "Withdrawal Metrics", "Node Analysis", "Raw Data"])
     
     with tabs[0]:
-        fig = make_subplots(
-            rows=3, cols=2,
-            subplot_titles=[
-                "TVL Over Time (csUSDL)", "Active vs Inactive Nodes",
-                "Treasury Balance (csUSDL)", "Haircut Evolution (%)",
-                "Daily Rewards (SHIFT)", "Referral Pool & Rewards (SHIFT)"
-            ]
-        )
-        
-        # TVL plot with goals
-        fig.add_trace(
-            go.Scatter(x=df["Time"], y=df["TVL"], name="TVL (csUSDL)"),
-            row=1, col=1
-        )
-        
-        # Add TVL goals visualization
-        for goal, haircut_start in tvl_goals:
-            # Find when goal was reached
-            goal_reached_time = next(
-                (t for t, v in zip(df["Time"], df["TVL"]) if v >= goal), 
-                None
-            )
-            
-            # Add horizontal line for the goal
-            fig.add_hline(
-                y=goal,
-                line=dict(
-                    color="green" if goal_reached_time else "red",
-                    dash="dash"
-                ),
-                row=1, col=1
-            )
-            
-            # Add annotation for the goal
-            if goal_reached_time:
-                fig.add_annotation(
-                    x=goal_reached_time,
-                    y=goal,
-                    text=f"Goal {goal:,.0f} csUSDL reached",
-                    showarrow=True,
-                    arrowhead=1,
-                    row=1, col=1
-                )
-                # Add vertical line at goal reached time
-                fig.add_vline(
-                    x=goal_reached_time,
-                    line=dict(color="green", dash="dash"),
-                    row=1, col=1
-                )
-            else:
-                fig.add_annotation(
-                    x=df["Time"].iloc[-1],
-                    y=goal,
-                    text=f"Goal: {goal:,.0f} csUSDL",
-                    showarrow=False,
-                    xanchor="left",
-                    row=1, col=1
-                )
-        
-        # Node count plot
-        fig.add_trace(
-            go.Scatter(x=df["Time"], y=df["Active Nodes"], name="Active Nodes"),
-            row=1, col=2
-        )
-        fig.add_trace(
-            go.Scatter(x=df["Time"], y=df["Inactive Nodes"], name="Inactive Nodes"),
-            row=1, col=2
-        )
-        
-        # Treasury plot
-        fig.add_trace(
-            go.Scatter(x=df["Time"], y=df["Treasury"], name="Treasury (csUSDL)"),
-            row=2, col=1
-        )
-        
-        # Haircut plot
-        fig.add_trace(
-            go.Scatter(x=df["Time"], y=df["Haircut"].mul(100), name="Haircut %"),
-            row=2, col=2
-        )
-        
-        # Rewards plots
-        fig.add_trace(
-            go.Scatter(x=df["Time"], y=df["Rewards"], name="Daily Rewards (SHIFT)"),
-            row=3, col=1
-        )
-        
-        fig.add_trace(
-            go.Scatter(
-                x=df["Time"], 
-                y=df["Remaining Referral Pool"], 
-                name="Remaining Pool (SHIFT)",
-                line=dict(color='blue')
-            ),
-            row=3, col=2
-        )
-        fig.add_trace(
-            go.Scatter(x=df["Time"], y=df["Referral Rewards"], 
-                      name="Referral Rewards (SHIFT)"),
-            row=3, col=2
-        )
-        # Add a horizontal line for initial pool size
-        fig.add_hline(
-            y=referral_pool,
-            line=dict(color="gray", dash="dash"),
-            row=3, col=2
-        )
-        
-        fig.add_annotation(
-            x=0,
-            y=referral_pool,
-            text=f"Initial Pool: {referral_pool:,.0f} SHIFT",
-            showarrow=False,
-            xanchor="left",
-            row=3, col=2
-        )
-        
-        # Update y-axis labels
-        fig.update_yaxes(title_text="csUSDL", row=1, col=1)
-        fig.update_yaxes(title_text="Number of Nodes", row=1, col=2)
-        fig.update_yaxes(title_text="csUSDL", row=2, col=1)
-        fig.update_yaxes(title_text="Percentage", row=2, col=2)
-        fig.update_yaxes(title_text="SHIFT", row=3, col=1)
-        fig.update_yaxes(title_text="SHIFT", row=3, col=2)
-        
-        # Update x-axis labels
-        for i in range(1, 4):
-            for j in range(1, 3):
-                fig.update_xaxes(title_text="Time (days)", row=i, col=j)
-        
-        fig.update_layout(
-            height=1000,
-            showlegend=True,
-            legend=dict(
-                yanchor="top",
-                y=0.99,
-                xanchor="left",
-                x=1.05
-            )
-        )
+        fig = plot_network_metrics(df, network_params["tvl_goals"])
         st.plotly_chart(fig, use_container_width=True)
-        
+    
     with tabs[1]:
-        withdrawal_fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=[
-                "Daily Withdrawal Breakdown (csUSDL)",
-                "Daily Withdrawal Count",
-                "Cumulative Withdrawals (csUSDL)",
-                "Withdrawal Distribution"
-            ],
-            specs=[
-                [{"type": "xy"}, {"type": "xy"}],
-                [{"type": "xy"}, {"type": "domain"}]  # "domain" type for pie chart
-            ]
-        )
-        
-        # Daily withdrawal breakdown - stacked bar
-        withdrawal_fig.add_trace(
-            go.Bar(
-                x=df["Time"],
-                y=df["Net Withdrawn"],
-                name="Net Withdrawn (csUSDL)",
-                marker_color='green'
-            ),
-            row=1, col=1
-        )
-        withdrawal_fig.add_trace(
-            go.Bar(
-                x=df["Time"],
-                y=df["Haircut Collected"],
-                name="Haircut (csUSDL)",
-                marker_color='red'
-            ),
-            row=1, col=1
-        )
-        
-        # Update barmode for stacking
-        withdrawal_fig.update_layout(barmode='stack')
-        
-        # Daily withdrawal count
-        withdrawal_fig.add_trace(
-            go.Scatter(
-                x=df["Time"],
-                y=df["Withdrawal Count"],
-                name="Number of Withdrawals"
-            ),
-            row=1, col=2
-        )
-        
-        # Cumulative withdrawals
-        withdrawal_fig.add_trace(
-            go.Scatter(
-                x=df["Time"],
-                y=df["Net Withdrawn"].cumsum(),
-                name="Net Withdrawn (csUSDL)",
-                line=dict(color='green')
-            ),
-            row=2, col=1
-        )
-        withdrawal_fig.add_trace(
-            go.Scatter(
-                x=df["Time"],
-                y=df["Haircut Collected"].cumsum(),
-                name="Haircut (csUSDL)",
-                line=dict(color='red')
-            ),
-            row=2, col=1
-        )
-        
-        # Withdrawal distribution pie chart
-        total_withdrawn = df["Daily Withdrawals"].sum()
-        total_haircut = df["Haircut Collected"].sum()
-        total_net = df["Net Withdrawn"].sum()
-        
-        withdrawal_fig.add_trace(
-            go.Pie(
-                values=[total_net, total_haircut],
-                labels=["Net Withdrawn", "Haircut"],
-                marker=dict(colors=['green', 'red'])
-            ),
-            row=2, col=2
-        )
-        
-        withdrawal_fig.update_layout(
-            height=800, 
-            showlegend=True,
-            # Adjust pie position and size
-            margin=dict(t=50, l=50, r=50, b=50)
-        )
-        st.plotly_chart(withdrawal_fig, use_container_width=True)
-
+        fig = plot_withdrawal_metrics(df)
+        st.plotly_chart(fig, use_container_width=True)
+    
     with tabs[2]:
         node_metrics = sim.get_node_metrics()
         
         col1, col2 = st.columns(2)
-        
         with col1:
             st.metric("Total Nodes", len(node_metrics))
             st.metric("Active Nodes", node_metrics['is_active'].sum())
-            
         with col2:
             st.metric("Total Deposits", f"${node_metrics['deposit'].sum():,.2f}")
             st.metric("Total Rewards", f"${node_metrics['total_rewards'].sum():,.2f}")
@@ -427,7 +251,6 @@ if st.sidebar.button("Run Simulation"):
     
     with tabs[3]:
         st.dataframe(df)
-        
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button(
             "Download CSV",
@@ -435,3 +258,40 @@ if st.sidebar.button("Run Simulation"):
             "simulation_data.csv",
             "text/csv"
         )
+
+def run_monte_carlo_simulation(mc_params: dict):
+    simulator = MonteCarloSimulator(**mc_params)
+    
+    with st.spinner("Running Monte Carlo simulations..."):
+        results = simulator.run_simulation()
+        
+    col1, col2 = st.columns(2)
+    
+    for result in results:
+        with col1:
+            st.subheader(f"TVL Goal: ${result.target:,.0f}")
+            metrics = display_monte_carlo_metrics(result, mc_params["n_simulations"])
+            for label, value in metrics.items():
+                st.metric(label, value)
+                
+        with col2:
+            if result.times_reached > 0:
+                fig = plot_monte_carlo_results(result, mc_params["n_simulations"])
+                st.plotly_chart(fig, use_container_width=True)
+
+if __name__ == "__main__":
+    st.set_page_config(page_title="Coinshift Network Simulation", layout="wide")
+    
+    tab1, tab2 = st.tabs(["Single Simulation", "Monte Carlo Analysis"])
+    
+    params = get_simulation_params()
+    
+    with tab1:
+        if st.sidebar.button("Run Simulation"):
+            network_params = get_network_params(params)
+            run_single_simulation(network_params, params.n_steps)
+            
+    with tab2:
+        mc_params = get_monte_carlo_params(params)
+        if st.sidebar.button("Run Monte Carlo"):
+            run_monte_carlo_simulation(mc_params)
