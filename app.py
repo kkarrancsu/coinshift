@@ -6,6 +6,8 @@ from viz import (
     plot_network_metrics, 
     plot_withdrawal_metrics,
     plot_monte_carlo_results,
+    plot_withdrawal_distributions,
+    plot_milestone_metrics,
     display_monte_carlo_metrics
 )
 
@@ -264,19 +266,30 @@ def run_monte_carlo_simulation(mc_params: dict):
     
     with st.spinner("Running Monte Carlo simulations..."):
         results = simulator.run_simulation()
+        milestone_data = {
+            'nodes_at_milestone': simulator.nodes_at_milestone,
+            'referral_rewards_at_milestone': simulator.referral_rewards_at_milestone,
+            'treasury_at_milestone': simulator.treasury_at_milestone,
+            'time_at_milestone': simulator.milestone_data
+        }
         
-    col1, col2 = st.columns(2)
-    
     for result in results:
-        with col1:
-            st.subheader(f"TVL Goal: ${result.target:,.0f}")
-            metrics = display_monte_carlo_metrics(result, mc_params["n_simulations"])
-            for label, value in metrics.items():
-                st.metric(label, value)
+        st.subheader(f"TVL Goal: ${result.target:,.0f}")
+        st.text(display_monte_carlo_metrics(result, mc_params["n_simulations"]))
+        
+        if result.times_reached > 0:
+            tabs = st.tabs(["Time & Treasury", "Withdrawals", "Network Metrics"])
+            
+            with tabs[0]:
+                fig = plot_monte_carlo_results(result, milestone_data)
+                st.plotly_chart(fig, use_container_width=True)
                 
-        with col2:
-            if result.times_reached > 0:
-                fig = plot_monte_carlo_results(result, mc_params["n_simulations"])
+            with tabs[1]:
+                fig = plot_withdrawal_distributions(result, mc_params["n_simulations"])
+                st.plotly_chart(fig, use_container_width=True)
+                
+            with tabs[2]:
+                fig = plot_milestone_metrics(result, milestone_data)
                 st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
