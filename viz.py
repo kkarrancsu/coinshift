@@ -753,3 +753,235 @@ def plot_milestone_metrics(result, milestone_data: dict) -> go.Figure:
     fig.update_yaxes(title_text="Withdrawal Rate (csUSDL/day)", row=2, col=2)
 
     return fig
+
+def plot_optimization_results(result, milestone_data: dict) -> go.Figure:
+    # Create figure with 5 subplots (2 rows, 3 columns)
+    fig = make_subplots(
+        rows=2, cols=3,
+        subplot_titles=[
+            "Time to Target Distribution",
+            "ROI Distribution",
+            "Haircut Collection Distribution",
+            "Network Growth Rate",
+            "Node Growth Trajectories",  # Moved to bottom row
+            "Node Count Distribution at Target"
+        ]
+    )
+
+    # 1. Time to Target Distribution
+    times = milestone_data['time_at_milestone'][result.target_tvl]
+    if times and len(times) > 1:
+        try:
+            kde = stats.gaussian_kde(times)
+            x = np.linspace(min(times), max(times), 100)
+            y = kde(x)
+            fig.add_trace(
+                go.Scatter(x=x, y=y, fill='tozeroy', name="Time Distribution"),
+                row=1, col=1
+            )
+        except np.linalg.LinAlgError:
+            # Fallback to histogram if KDE fails
+            fig.add_trace(
+                go.Histogram(x=times, histnorm='probability density', name="Time Distribution"),
+                row=1, col=1
+            )
+        
+        fig.add_vline(
+            x=np.median(times),
+            line=dict(color="red", dash="dash"),
+            annotation=dict(text=f"Median: {np.median(times):.1f} days"),
+            row=1, col=1
+        )
+
+    # 2. ROI Distribution
+    treasuries = milestone_data['treasury_at_milestone'][result.target_tvl]
+    principals = milestone_data['locked_principal_at_milestone'][result.target_tvl]
+    if treasuries and principals:
+        rois = np.array([t/p * 100 for t, p in zip(treasuries, principals) if p > 0])
+        if len(rois) > 1:
+            try:
+                kde = stats.gaussian_kde(rois)
+                x = np.linspace(min(rois), max(rois), 100)
+                y = kde(x)
+                fig.add_trace(
+                    go.Scatter(x=x, y=y, fill='tozeroy', name="ROI Distribution"),
+                    row=1, col=2
+                )
+            except np.linalg.LinAlgError:
+                fig.add_trace(
+                    go.Histogram(x=rois, histnorm='probability density', name="ROI Distribution"),
+                    row=1, col=2
+                )
+            
+            fig.add_vline(
+                x=np.median(rois),
+                line=dict(color="red", dash="dash"),
+                annotation=dict(text=f"Median: {np.median(rois):.1f}%"),
+                row=1, col=2
+            )
+
+    # 3. Haircut Distribution
+    haircuts = milestone_data['haircuts_collected_at_milestone'][result.target_tvl]
+    if haircuts and len(haircuts) > 1:
+        try:
+            kde = stats.gaussian_kde(haircuts)
+            x = np.linspace(min(haircuts), max(haircuts), 100)
+            y = kde(x)
+            fig.add_trace(
+                go.Scatter(x=x, y=y, fill='tozeroy', name="Haircut Distribution"),
+                row=1, col=3
+            )
+        except np.linalg.LinAlgError:
+            fig.add_trace(
+                go.Histogram(x=haircuts, histnorm='probability density', name="Haircut Distribution"),
+                row=1, col=3
+            )
+        
+        median_haircut = np.median(haircuts)
+        fig.add_vline(
+            x=median_haircut,
+            line=dict(color="red", dash="dash"),
+            annotation=dict(text=f"Median: {median_haircut:,.0f}"),
+            row=1, col=3
+        )
+
+    # 4. Network Growth - Updated implementation
+    times = milestone_data['time_at_milestone'][result.target_tvl]
+    nodes = milestone_data['nodes_at_milestone'][result.target_tvl]
+    if times and nodes:
+        df = pd.DataFrame({'time': times, 'nodes': nodes})
+        
+        # Sort by time and create evenly spaced bins
+        df = df.sort_values('time')
+        n_bins = min(20, len(df)//5)
+        
+        # Create time bins using linear spacing instead of quantiles
+        df['time_bin'] = pd.cut(
+            df['time'], 
+            bins=n_bins,
+            labels=False
+        )
+        
+        # Calculate statistics for each bin
+        bin_stats = df.groupby('time_bin').agg({
+            'time': 'mean',
+            'nodes': ['median', lambda x: np.percentile(x, 25), lambda x: np.percentile(x, 75)]
+        }).reset_index()
+        
+        bin_stats.columns = ['bin', 'time', 'nodes_median', 'nodes_25', 'nodes_75']
+        
+        # Plot median line
+        fig.add_trace(
+            go.Scatter(
+                x=bin_stats['time'],
+                y=bin_stats['nodes_median'],
+                mode='lines',
+                name="Median Nodes",
+                line=dict(color='blue')
+            ),
+            row=2, col=1
+        )
+        
+        # Add confidence interval
+        fig.add_trace(
+            go.Scatter(
+                x=list(bin_stats['time']) + list(bin_stats['time'])[::-1],
+                y=list(bin_stats['nodes_75']) + list(bin_stats['nodes_25'])[::-1],
+                fill='toself',
+                fillcolor='rgba(0,0,255,0.2)',
+                line=dict(color='rgba(255,255,255,0)'),
+                name='25-75th Percentile'
+            ),
+            row=2, col=1
+        )
+        
+        # Add scatter plot of actual points with low opacity
+        fig.add_trace(
+            go.Scatter(
+                x=df['time'],
+                y=df['nodes'],
+                mode='markers',
+                marker=dict(
+                    color='blue',
+                    size=3,
+                    opacity=0.1
+                ),
+                name='Individual Simulations'
+            ),
+            row=2, col=1
+        )
+
+    # Add node growth trajectories plot
+    if 'node_trajectories' in milestone_data:
+        print(f"Found {len(milestone_data['node_trajectories'])} trajectories")
+        
+        for ii, trajectory in enumerate(milestone_data['node_trajectories']):
+            if ii == 0:
+                print(trajectory)
+            fig.add_trace(
+                go.Scatter(
+                    x=list(range(len(trajectory))),
+                    y=trajectory,
+                    mode='lines',
+                    line=dict(color='blue', width=1),
+                    opacity=0.1,
+                    showlegend=False,
+                    hovertemplate="Day: %{x}<br>Nodes: %{y}<extra></extra>"
+                ),
+                row=2, col=2  # New position
+            )
+        
+        # Add median trajectory
+        trajectories_array = np.array([
+            t[:min(len(traj) for traj in milestone_data['node_trajectories'])] 
+            for t in milestone_data['node_trajectories']
+        ])
+        median_trajectory = np.median(trajectories_array, axis=0)
+        
+        fig.add_trace(
+            go.Scatter(
+                x=list(range(len(median_trajectory))),
+                y=median_trajectory,
+                mode='lines',
+                line=dict(color='red', width=2),
+                name='Median Growth',
+                hovertemplate="Day: %{x}<br>Nodes: %{y:.0f}<extra></extra>"
+            ),
+            row=2, col=2  # New position
+        )
+
+    # Update layout
+    fig.update_layout(
+        height=800,
+        showlegend=True,
+        title_text=f"Optimization Results (Target TVL: ${float(result.target_tvl/1e6):.1f}M, Haircut: {result.haircut*100:.1f}%)"
+    )
+
+    # Update axes titles
+    fig.update_xaxes(title_text="Days to Target", row=1, col=1)
+    fig.update_xaxes(title_text="Return on Investment (%)", row=1, col=2)
+    fig.update_xaxes(title_text="Total Haircut Collected", row=1, col=3)
+    fig.update_xaxes(title_text="Days", row=2, col=1)
+    fig.update_xaxes(title_text="Days", row=2, col=2)  # For node trajectories
+    fig.update_xaxes(title_text="Number of Nodes", row=2, col=3)
+
+    fig.update_yaxes(title_text="Density", row=1, col=1)
+    fig.update_yaxes(title_text="Density", row=1, col=2)
+    fig.update_yaxes(title_text="Density", row=1, col=3)
+    fig.update_yaxes(title_text="Growth Rate", row=2, col=1)
+    fig.update_yaxes(title_text="Number of Nodes", row=2, col=2)  # For node trajectories
+    fig.update_yaxes(title_text="Density", row=2, col=3)
+
+    # Add grid lines for node trajectories plot
+    fig.update_xaxes(
+        gridcolor='lightgrey',
+        showgrid=True,
+        row=2, col=2
+    )
+    fig.update_yaxes(
+        gridcolor='lightgrey',
+        showgrid=True,
+        row=2, col=2
+    )
+
+    return fig

@@ -8,12 +8,16 @@ from viz import (
     plot_monte_carlo_results,
     plot_withdrawal_distributions,
     plot_milestone_metrics,
-    display_monte_carlo_metrics
+    display_monte_carlo_metrics,
+    plot_optimization_results
 )
 
 import streamlit as st
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any
+from tvl_optimizer import TVLOptimizer, ConstantExchangeRate
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 
 @dataclass
 class SimulationParams:
@@ -101,7 +105,7 @@ def get_simulation_params() -> SimulationParams:
             with col1:
                 base_growth_rate = st.number_input(
                     "Base growth rate",
-                    0.0, 50.0, 2.0, 0.1,
+                    0.0, 50.0, 0.05, 0.05,
                     help="Initial daily growth rate"
                 )
                 growth_inflection_point = st.number_input(
@@ -112,12 +116,12 @@ def get_simulation_params() -> SimulationParams:
             with col2:
                 max_growth_rate = st.number_input(
                     "Max growth rate",
-                    base_growth_rate, 100.0, 10.0, 0.1,
+                    base_growth_rate, 100.0, 0.1, 1.0,
                     help="Maximum daily growth rate"
                 )
                 growth_steepness = st.number_input(
                     "Growth steepness",
-                    0.01, 1.0, 0.1, 0.01,
+                    0.01, 1.0, 0.01, 0.01,
                     help="How quickly growth transitions from base to max rate"
                 )
             referral_rate = 0  # Default values for unused params
@@ -222,7 +226,7 @@ def get_simulation_params() -> SimulationParams:
     )
 
 def get_network_params(params: SimulationParams) -> Dict[str, Any]:
-    print(f"Starting TVL being passed to network: {params.starting_tvl:,.2f}")
+    # print(f"Starting TVL being passed to network: {params.starting_tvl:,.2f}")
     return {
         "referral_rate": params.referral_rate,
         "spontaneous_rate": params.spontaneous_rate,
@@ -410,10 +414,97 @@ def run_monte_carlo_simulation(mc_params: dict):
                 fig = plot_milestone_metrics(result, milestone_data)
                 st.plotly_chart(fig, use_container_width=True)
 
+def get_optimization_params() -> Dict[str, Any]:
+    st.header("Optimization Parameters")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        target_days = st.number_input(
+            "Target Days",
+            min_value=30,
+            max_value=365,
+            value=90,
+            help="Target number of days to reach TVL goal"
+        )
+        min_success_rate = st.number_input(
+            "Minimum Success Rate",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.7,
+            step=0.05,
+            help="Minimum required success rate for optimization"
+        )
+    
+    with col2:
+        shift_rate = st.number_input(
+            "SHIFT/csUSDL Rate",
+            min_value=0.01,
+            max_value=100.0,
+            value=1.0,
+            help="Exchange rate between SHIFT and csUSDL"
+        )
+        min_roi = st.number_input(
+            "Minimum ROI",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.15,
+            step=0.05,
+            help="Minimum required ROI"
+        )
+        
+    return {
+        "target_days": target_days,
+        "min_success_rate": min_success_rate,
+        "min_roi": min_roi,
+        "exchange_rate_provider": ConstantExchangeRate(shift_rate)
+    }
+
+def create_optimization_page(network_params: Dict[str, Any]):
+    opt_params = get_optimization_params()
+    
+    current_tvl = network_params.get("starting_tvl", 0)
+    if current_tvl == 0:
+        st.error("Please set a starting TVL value")
+        return
+        
+    if st.button("Run TVL Optimization"):
+        try:
+            optimizer = TVLOptimizer(
+                network_params=network_params,
+                **opt_params
+            )
+            
+            with st.spinner("Running optimization..."):
+                result = optimizer.optimize(current_tvl)
+                
+                # Display the new visualization
+                fig = plot_optimization_results(result, optimizer.milestone_data)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Display raw data in expandable section without formatting
+                with st.expander("Raw Optimization Results"):
+                    st.json({
+                        "target_tvl": result.target_tvl,
+                        "haircut": result.haircut,
+                        "expected_days": result.expected_days,
+                        "success_rate": result.success_rate,
+                        "expected_roi": result.expected_roi,
+                        "shift_penalty_ratio": result.shift_penalty_ratio,
+                        "avg_daily_rewards": result.avg_daily_rewards
+                    })
+            
+        except Exception as e:
+            st.error(f"Optimization failed: {str(e)}")
+            raise e
+
 if __name__ == "__main__":
     st.set_page_config(page_title="Coinshift Network Simulation", layout="wide")
     
-    tab1, tab2 = st.tabs(["Single Simulation", "Monte Carlo Analysis"])
+    tab1, tab2, tab3 = st.tabs([
+        "Single Simulation", 
+        "Monte Carlo Analysis",
+        "TVL Optimization"
+    ])
     
     params = get_simulation_params()
     
@@ -426,3 +517,7 @@ if __name__ == "__main__":
         mc_params = get_monte_carlo_params(params)
         if st.sidebar.button("Run Monte Carlo"):
             run_monte_carlo_simulation(mc_params)
+            
+    with tab3:
+        network_params = get_network_params(params)
+        create_optimization_page(network_params)

@@ -147,15 +147,15 @@ class CoinshiftNetwork:
 
     def _initialize(self, initial_nodes: int):
         self.current_time = 0
-        print(f"\nInitializing network:")
-        print(f"Starting TVL target: {self.starting_tvl:,.2f}")
-        print(f"Initial nodes: {initial_nodes}")
+        # print(f"\nInitializing network:")
+        # print(f"Starting TVL target: {self.starting_tvl:,.2f}")
+        # print(f"Initial nodes: {initial_nodes}")
         
         if self.starting_tvl > 0:
             avg_deposit = self.starting_tvl / initial_nodes
             min_deposit = max(self.min_deposit, avg_deposit * 0.5)
             max_deposit = min(self.max_deposit, avg_deposit * 1.5)
-            print(f"Calculated deposit range: {min_deposit:,.2f} - {max_deposit:,.2f}")
+            # print(f"Calculated deposit range: {min_deposit:,.2f} - {max_deposit:,.2f}")
             self.min_deposit = min_deposit
             self.max_deposit = max_deposit
             
@@ -164,15 +164,15 @@ class CoinshiftNetwork:
 
         if self.starting_tvl > 0:
             current_tvl = self.calculate_tvl()
-            print(f"Initial TVL before scaling: {current_tvl:,.2f}")
+            # print(f"Initial TVL before scaling: {current_tvl:,.2f}")
             if current_tvl > 0:
                 scale_factor = self.starting_tvl / current_tvl
-                print(f"Applying scale factor: {scale_factor:.2f}")
+                # print(f"Applying scale factor: {scale_factor:.2f}")
                 for node in self.nodes.values():
                     node.deposit *= scale_factor
                 
         final_tvl = self.calculate_tvl()
-        print(f"Final initial TVL: {final_tvl:,.2f}")
+        # print(f"Final initial TVL: {final_tvl:,.2f}")
         
         # Record initial state
         self.tvl_history.append(self.calculate_tvl())
