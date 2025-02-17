@@ -18,17 +18,27 @@ from typing import List, Tuple, Dict, Any
 @dataclass
 class SimulationParams:
     n_steps: int
-    referral_rate: float
-    spontaneous_rate: float
-    hyperbolic_scale: float
     initial_nodes: int
     total_population: int
+    # Growth parameters (both models)
     referral_bonus: float
-    withdrawal_prob: float
+    # Original growth model params
+    referral_rate: float
+    spontaneous_rate: float
+    # New growth model params
+    base_growth_rate: float
+    max_growth_rate: float
+    growth_inflection_point: int
+    growth_steepness: float
+    # Rest of params
+    hyperbolic_scale: float
+    reward_withdrawal_prob: float
+    principal_withdrawal_prob: float
     min_deposit: float
     max_deposit: float
     referral_pool: float
     tvl_goals: List[Tuple[float, float]]
+    starting_tvl: float
 
 def get_simulation_params() -> SimulationParams:
     with st.sidebar:
@@ -41,53 +51,107 @@ def get_simulation_params() -> SimulationParams:
                 1, 10000, 365,
                 help="Number of days to simulate"
             )
-            referral_rate = st.number_input(
-                "Referral rate", 
-                0.0, 1.0, 0.05, 0.01,
-                help="New users per existing user per day"
-            )
-            spontaneous_rate = st.number_input(
-                "Spontaneous rate", 
-                0.0, 10.0, 2.0, 0.1,
-                help="Organic new users per day"
-            )
-            hyperbolic_scale = st.number_input(
-                "Hyperbolic scale",
-                1.0, 1000.0, 100.0, 10.0,
-                help="Controls rewards decay speed"
-            )
-            
-        with col2:
             initial_nodes = st.number_input(
                 "Initial nodes", 
                 1, 100, 10,
                 help="Starting number of users"
             )
+            
+        with col2:
+            starting_tvl = st.number_input(
+                "Starting TVL (M)",
+                0.0, 1000.0, 10.0,
+                help="Initial TVL value in millions"
+            ) * 1e6
             total_population = st.number_input(
                 "Total population", 
                 initial_nodes, 10000, 1000,
                 help="Maximum possible users"
             )
-            referral_bonus = st.number_input(
-                "Referral bonus %", 
-                0.0, 100.0, 0.0, 0.1,
-                help="Bonus % of referred user's deposit"
-            ) / 100
-            withdrawal_prob = st.number_input(
-                "Withdrawal probability", 
+
+        st.header("Growth Model Parameters")
+        referral_bonus = st.number_input(
+            "Referral bonus %", 
+            0.0, 100.0, 0.0, 0.1,
+            help="Set to 0 to use S-curve growth model, >0 for referral growth model"
+        ) / 100
+
+        if referral_bonus > 0:
+            # Show original growth model params
+            col1, col2 = st.columns(2)
+            with col1:
+                referral_rate = st.number_input(
+                    "Referral rate", 
+                    0.0, 1.0, 0.05, 0.01,
+                    help="New users per existing user per day"
+                )
+            with col2:
+                spontaneous_rate = st.number_input(
+                    "Spontaneous rate", 
+                    0.0, 10.0, 2.0, 0.1,
+                    help="Organic new users per day"
+                )
+            base_growth_rate = 0  # Default values for unused params
+            max_growth_rate = 0
+            growth_inflection_point = 0
+            growth_steepness = 0
+        else:
+            # Show new S-curve growth model params
+            col1, col2 = st.columns(2)
+            with col1:
+                base_growth_rate = st.number_input(
+                    "Base growth rate",
+                    0.0, 50.0, 2.0, 0.1,
+                    help="Initial daily growth rate"
+                )
+                growth_inflection_point = st.number_input(
+                    "Growth inflection point",
+                    1, 1000, 180,
+                    help="Day at which growth accelerates"
+                )
+            with col2:
+                max_growth_rate = st.number_input(
+                    "Max growth rate",
+                    base_growth_rate, 100.0, 10.0, 0.1,
+                    help="Maximum daily growth rate"
+                )
+                growth_steepness = st.number_input(
+                    "Growth steepness",
+                    0.01, 1.0, 0.1, 0.01,
+                    help="How quickly growth transitions from base to max rate"
+                )
+            referral_rate = 0  # Default values for unused params
+            spontaneous_rate = 0
+
+        st.header("Other Parameters")
+        col1, col2 = st.columns(2)
+        with col1:
+            hyperbolic_scale = st.number_input(
+                "Hyperbolic scale",
+                1.0, 1000.0, 100.0, 10.0,
+                help="Controls rewards decay speed"
+            )
+            reward_withdrawal_prob = st.number_input(
+                "Reward withdrawal prob", 
                 0.0, 1.0, 0.1, 0.01,
-                help="Daily withdrawal chance"
+                help="Daily probability of withdrawing rewards"
+            )
+        with col2:
+            principal_withdrawal_prob = st.number_input(
+                "Principal withdrawal prob", 
+                0.0, 1.0, 0.01, 0.01,
+                help="Daily probability of withdrawing principal after lock expiry"
             )
 
         st.header("Deposit Range")
         min_deposit = st.number_input(
             "Min deposit", 
-            0.0, 1e6, 1000.0, 100.0,
+            0.0, 1e6, 100.0, 100.0,
             help="Minimum csUSDL deposit"
         )
         max_deposit = st.number_input(
             "Max deposit", 
-            min_deposit, 1e8, 10_000.0, 1000.0,
+            min_deposit, 1e8, 1000.0, 1000.0,
             help="Maximum csUSDL deposit"
         )
 
@@ -98,6 +162,7 @@ def get_simulation_params() -> SimulationParams:
             help="Total SHIFT for referral bonuses"
         )
 
+        # TVL Goals section remains unchanged
         st.header("TVL Goals")
         num_goals = st.number_input(
             "Number of TVL goals", 
@@ -109,14 +174,19 @@ def get_simulation_params() -> SimulationParams:
         for i in range(num_goals):
             col1, col2 = st.columns(2)
             with col1:
+                increase_pct = (i + 1) * 50 
+                goal_tvl = starting_tvl * (1 + increase_pct/100)
+                goal_tvl_m = goal_tvl / 1e6
+                
                 tvl = st.number_input(
-                    f"TVL Goal {i+1} (csUSDL)", 
+                    f"TVL Goal {i+1} (M) (+{increase_pct}%)", 
                     min_value=0.0,
-                    max_value=1e9,
-                    value=1_000_000.0 * (i + 1),
-                    step=100_000.0,
-                    key=f"tvl_{i}"
-                )
+                    max_value=1000.0,
+                    value=goal_tvl_m,
+                    step=0.1,
+                    key=f"tvl_{i}",
+                    help=f"TVL goal in millions (auto-set to {increase_pct}% above starting TVL)"
+                ) * 1e6
             with col2:
                 haircut = st.number_input(
                     f"Initial Haircut {i+1} (%)", 
@@ -132,23 +202,34 @@ def get_simulation_params() -> SimulationParams:
 
     return SimulationParams(
         n_steps=n_steps,
-        referral_rate=referral_rate,
-        spontaneous_rate=spontaneous_rate,
-        hyperbolic_scale=hyperbolic_scale,
         initial_nodes=initial_nodes,
         total_population=total_population,
         referral_bonus=referral_bonus,
-        withdrawal_prob=withdrawal_prob,
+        referral_rate=referral_rate,
+        spontaneous_rate=spontaneous_rate,
+        base_growth_rate=base_growth_rate,
+        max_growth_rate=max_growth_rate,
+        growth_inflection_point=growth_inflection_point,
+        growth_steepness=growth_steepness,
+        hyperbolic_scale=hyperbolic_scale,
+        reward_withdrawal_prob=reward_withdrawal_prob,
+        principal_withdrawal_prob=principal_withdrawal_prob,
         min_deposit=min_deposit,
         max_deposit=max_deposit,
         referral_pool=referral_pool,
-        tvl_goals=tvl_goals
+        tvl_goals=tvl_goals,
+        starting_tvl=starting_tvl
     )
 
 def get_network_params(params: SimulationParams) -> Dict[str, Any]:
+    print(f"Starting TVL being passed to network: {params.starting_tvl:,.2f}")
     return {
         "referral_rate": params.referral_rate,
         "spontaneous_rate": params.spontaneous_rate,
+        "base_growth_rate": params.base_growth_rate,
+        "max_growth_rate": params.max_growth_rate,
+        "growth_inflection_point": params.growth_inflection_point,
+        "growth_steepness": params.growth_steepness,
         "initial_nodes": params.initial_nodes,
         "total_population": params.total_population,
         "tvl_goals": params.tvl_goals,
@@ -156,8 +237,10 @@ def get_network_params(params: SimulationParams) -> Dict[str, Any]:
         "max_deposit": params.max_deposit,
         "referral_bonus_pct": params.referral_bonus,
         "hyperbolic_scale": params.hyperbolic_scale,
-        "withdrawal_prob": params.withdrawal_prob,
-        "total_referral_bonus_pool": params.referral_pool
+        "reward_withdrawal_prob": params.reward_withdrawal_prob,
+        "principal_withdrawal_prob": params.principal_withdrawal_prob,
+        "total_referral_bonus_pool": params.referral_pool,
+        "starting_tvl": params.starting_tvl
     }
 
 def get_monte_carlo_params(base_params: SimulationParams) -> Dict[str, Any]:
@@ -192,16 +275,33 @@ def get_monte_carlo_params(base_params: SimulationParams) -> Dict[str, Any]:
 def run_single_simulation(network_params: dict, n_steps: int):
     sim = CoinshiftNetwork(**network_params)
     
+    print(f"Initial TVL: {sim.calculate_tvl()}")
+    print(f"Initial TVL history: {sim.tvl_history}")
+    
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     data = {
-        "Time": [], "TVL": [], "Active Nodes": [], "Inactive Nodes": [],
-        "Treasury": [], "Haircut": [], "Rewards": [], "Referral Rewards": [],
-        "Daily Withdrawals": [], "Withdrawal Count": [], 
-        "Haircut Collected": [], "Net Withdrawn": [],
-        "Remaining Referral Pool": []
+        "Time": [sim.current_time],
+        "TVL": [sim.tvl_history[0]],
+        "Active Nodes": [sim.active_nodes_history[0]],
+        "Inactive Nodes": [sim.next_id - sim.active_nodes_history[0]],
+        "Treasury": [sim.treasury_history[0]],
+        "Haircut": [sim.haircut_history[0]],
+        "Rewards": [sim.rewards_history[0]],
+        "Referral Rewards": [sim.referral_rewards_history[0]],
+        "Withdrawal Count": [sim.withdrawal_count_history[0]],
+        "Haircut Collected": [sim.total_haircut_collected_history[0]],
+        "Net Claimed Rewards": [sim.net_claimed_rewards_history[0]],
+        "Remaining Referral Pool": [sim.referral_bonus_history[0]],
+        "Principal Withdrawn": [0],
+        "Average Lock Period": [
+            sum(sim.nodes[n].lock_period for n in sim.get_active_nodes()) / len(sim.get_active_nodes())
+            if sim.get_active_nodes() else 0
+        ]
     }
+    
+    print(f"First data point - Time: {data['Time'][0]}, TVL: {data['TVL'][0]}")
     
     for step in range(n_steps):
         sim.step()
@@ -216,11 +316,24 @@ def run_single_simulation(network_params: dict, n_steps: int):
         data["Haircut"].append(sim.haircut_history[-1])
         data["Rewards"].append(sim.rewards_history[-1])
         data["Referral Rewards"].append(sim.referral_rewards_history[-1])
-        data["Daily Withdrawals"].append(sim.withdrawal_amount_history[-1])
         data["Withdrawal Count"].append(sim.withdrawal_count_history[-1])
         data["Haircut Collected"].append(sim.total_haircut_collected_history[-1])
-        data["Net Withdrawn"].append(sim.net_withdrawn_history[-1])
+        data["Net Claimed Rewards"].append(sim.net_claimed_rewards_history[-1])
         data["Remaining Referral Pool"].append(sim.referral_bonus_history[-1])
+        
+        active_nodes = sim.get_active_nodes()
+        if active_nodes:
+            avg_lock = sum(sim.nodes[n].lock_period for n in active_nodes) / len(active_nodes)
+        else:
+            avg_lock = 0
+        data["Average Lock Period"].append(avg_lock)
+        
+        principal_withdrawn = sum(
+            1 for n in sim.nodes.values() 
+            if n.principal_withdrawn and 
+            n.active_until == sim.current_time
+        )
+        data["Principal Withdrawn"].append(principal_withdrawn)
 
         progress = (step + 1) / n_steps
         progress_bar.progress(progress)
@@ -241,13 +354,18 @@ def run_single_simulation(network_params: dict, n_steps: int):
     with tabs[2]:
         node_metrics = sim.get_node_metrics()
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Total Nodes", len(node_metrics))
             st.metric("Active Nodes", node_metrics['is_active'].sum())
         with col2:
             st.metric("Total Deposits", f"${node_metrics['deposit'].sum():,.2f}")
             st.metric("Total Rewards", f"${node_metrics['total_rewards'].sum():,.2f}")
+        with col3:
+            st.metric("Locked Nodes", 
+                     len(node_metrics[~node_metrics['principal_withdrawn']]))
+            st.metric("Average Lock Period", 
+                     f"{df['Average Lock Period'].mean():.1f} days")
         
         st.dataframe(node_metrics)
     
@@ -268,9 +386,9 @@ def run_monte_carlo_simulation(mc_params: dict):
         results = simulator.run_simulation()
         milestone_data = {
             'nodes_at_milestone': simulator.nodes_at_milestone,
-            'referral_rewards_at_milestone': simulator.referral_rewards_at_milestone,
             'treasury_at_milestone': simulator.treasury_at_milestone,
-            'time_at_milestone': simulator.milestone_data
+            'time_at_milestone': simulator.milestone_data,
+            'referral_rewards_at_milestone': simulator.referral_rewards_at_milestone
         }
         
     for result in results:

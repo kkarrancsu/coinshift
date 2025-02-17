@@ -6,30 +6,64 @@ from scipy import stats
 import numpy as np
 
 def plot_network_metrics(df: pd.DataFrame, tvl_goals: List[Tuple[float, float]]) -> go.Figure:
+    # Add more detailed debug prints
+    print("\nDetailed TVL data analysis:")
+    print("DataFrame shape:", df.shape)
+    print("TVL column info:", df["TVL"].describe())
+    print("Time values:", df["Time"].values[:5])
+    print("TVL values:", df["TVL"].values[:5])
+    
     fig = make_subplots(
-        rows=3, cols=2,
+        rows=4, cols=2,
         subplot_titles=[
             "TVL Over Time (csUSDL)", "Active vs Inactive Nodes",
-            "Treasury Balance (csUSDL)", "Haircut Evolution (%)",
-            "Daily Rewards (SHIFT)", "Referral Pool & Rewards (SHIFT)"
+            "Treasury Balance (SHIFT)", "Haircut Evolution (%)",
+            "Daily Rewards (SHIFT)", "Referral Pool & Rewards (SHIFT)",
+            "SHIFT Token Distribution", "Locked vs Circulating Ratio (%)"
         ]
     )
     
-    # TVL plot with goals
-    fig.add_trace(
-        go.Scatter(x=df["Time"], y=df["TVL"], name="TVL (csUSDL)"),
-        row=1, col=1
+    # TVL plot with goals - add more explicit trace creation
+    tvl_trace = go.Scatter(
+        x=df["Time"],
+        y=df["TVL"] / 1e6,  # Convert to millions
+        name="TVL (M csUSDL)",
+        mode='lines+markers'  # Add markers to see individual points more clearly
+    )
+    print("\nTVL trace data (in millions):")
+    print("x values:", tvl_trace.x[:5])
+    print("y values:", tvl_trace.y[:5])
+    
+    fig.add_trace(tvl_trace, row=1, col=1)
+    
+    # Update y-axis to ensure it starts from 0 or lower and has a reasonable upper bound
+    min_tvl = (df["TVL"] / 1e6).min()  # Convert to millions
+    max_tvl = (df["TVL"] / 1e6).max()  # Convert to millions
+    y_range = [
+        min_tvl * 0.9 if min_tvl > 0 else 0,
+        max_tvl * 1.2  # Increase upper bound by 20% for better visibility
+    ]
+    
+    print(f"\nY-axis range: {y_range}")  # Debug print
+    
+    fig.update_yaxes(
+        range=y_range,
+        title_text="TVL (M csUSDL)",
+        row=1, col=1,
+        tickformat=".0f"  # Format ticks without decimal places
     )
     
-    # Add TVL goals visualization
+    # Update TVL goals visualization to use millions
     for goal, haircut_start in tvl_goals:
+        goal_in_m = goal / 1e6  # Convert goal to millions
+        print(f"Adding goal line at {goal_in_m}M")  # Debug print
         goal_reached_time = next(
             (t for t, v in zip(df["Time"], df["TVL"]) if v >= goal), 
             None
         )
         
         fig.add_hline(
-            y=goal,
+            y=goal_in_m,  # Use goal in millions
             line=dict(
                 color="green" if goal_reached_time else "red",
                 dash="dash"
@@ -40,8 +74,8 @@ def plot_network_metrics(df: pd.DataFrame, tvl_goals: List[Tuple[float, float]])
         if goal_reached_time:
             fig.add_annotation(
                 x=goal_reached_time,
-                y=goal,
-                text=f"Goal {goal:,.0f} csUSDL reached",
+                y=goal_in_m,  # Use goal in millions
+                text=f"Goal {goal_in_m:.1f}M csUSDL reached",
                 showarrow=True,
                 arrowhead=1,
                 row=1, col=1
@@ -54,8 +88,8 @@ def plot_network_metrics(df: pd.DataFrame, tvl_goals: List[Tuple[float, float]])
         else:
             fig.add_annotation(
                 x=df["Time"].iloc[-1],
-                y=goal,
-                text=f"Goal: {goal:,.0f} csUSDL",
+                y=goal_in_m,  # Use goal in millions
+                text=f"Goal: {goal_in_m:.1f}M csUSDL",
                 showarrow=False,
                 xanchor="left",
                 row=1, col=1
@@ -73,7 +107,7 @@ def plot_network_metrics(df: pd.DataFrame, tvl_goals: List[Tuple[float, float]])
     
     # Treasury
     fig.add_trace(
-        go.Scatter(x=df["Time"], y=df["Treasury"], name="Treasury (csUSDL)"),
+        go.Scatter(x=df["Time"], y=df["Treasury"], name="Treasury (SHIFT)"),
         row=2, col=1
     )
     
@@ -91,40 +125,71 @@ def plot_network_metrics(df: pd.DataFrame, tvl_goals: List[Tuple[float, float]])
     
     # Referral Pool and Rewards
     fig.add_trace(
-        go.Scatter(
-            x=df["Time"], 
-            y=df["Remaining Referral Pool"], 
-            name="Remaining Pool (SHIFT)"
-        ),
+        go.Scatter(x=df["Time"], y=df["Remaining Referral Pool"], name="Remaining Pool"),
         row=3, col=2
     )
     fig.add_trace(
-        go.Scatter(x=df["Time"], y=df["Referral Rewards"], 
-                name="Referral Rewards (SHIFT)"),
+        go.Scatter(x=df["Time"], y=df["Referral Rewards"], name="Referral Rewards"),
         row=3, col=2
     )
     
-    # Update axis labels
-    fig.update_yaxes(title_text="csUSDL", row=1, col=1)
-    fig.update_yaxes(title_text="Number of Nodes", row=1, col=2)
-    fig.update_yaxes(title_text="csUSDL", row=2, col=1)
-    fig.update_yaxes(title_text="Percentage", row=2, col=2)
-    fig.update_yaxes(title_text="SHIFT", row=3, col=1)
-    fig.update_yaxes(title_text="SHIFT", row=3, col=2)
+    # Calculate and add SHIFT token distribution
+    df['Total_SHIFT_Minted'] = df['Rewards'].cumsum()
+    df['Circulating_SHIFT'] = df['Total_SHIFT_Minted'] - df['Treasury']
     
-    for i in range(1, 4):
-        for j in range(1, 3):
-            fig.update_xaxes(title_text="Time (days)", row=i, col=j)
+    # Token distribution stacked area
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df["Treasury"],
+            name="Locked in Treasury",
+            fill='tozeroy',
+            mode='lines',
+            line=dict(width=0.5),
+            fillcolor='rgba(255, 0, 0, 0.3)'
+        ),
+        row=4, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df['Total_SHIFT_Minted'],
+            name="Total Minted",
+            fill='tonexty',
+            mode='lines',
+            line=dict(width=0.5),
+            fillcolor='rgba(0, 255, 0, 0.3)'
+        ),
+        row=4, col=1
+    )
+    
+    # Locked ratio
+    df['Locked_Ratio'] = (df['Treasury'] / df['Total_SHIFT_Minted'] * 100).fillna(0)
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df['Locked_Ratio'],
+            name="Locked Ratio",
+            mode='lines',
+            line=dict(color='red')
+        ),
+        row=4, col=2
+    )
+    
+    # Add a horizontal line at 100% for ratio reference
+    fig.add_hline(
+        y=100, 
+        line_dash="dash", 
+        line_color="gray",
+        row=4, col=2
+    )
     
     fig.update_layout(
-        height=1000,
+        height=1200,  # Increased height to accommodate new row
         showlegend=True,
-        legend=dict(
-            yanchor="top",
-            y=0.99,
-            xanchor="left",
-            x=1.05
-        )
+        yaxis7_title="SHIFT Tokens",  # Token distribution y-axis
+        yaxis8_title="Locked Ratio (%)"  # Ratio y-axis
     )
     
     return fig
@@ -133,23 +198,23 @@ def plot_withdrawal_metrics(df: pd.DataFrame) -> go.Figure:
     fig = make_subplots(
         rows=2, cols=2,
         subplot_titles=[
-            "Daily Withdrawal Breakdown",
-            "Daily Withdrawal Count",
-            "Cumulative Withdrawals",
-            "Withdrawal Distribution"
+            "Daily Reward Withdrawals (SHIFT)",
+            "Cumulative Reward Withdrawals (SHIFT)",
+            "Average Lock Period",
+            "Principal vs Reward Withdrawals"
         ],
         specs=[
             [{"type": "xy"}, {"type": "xy"}],
-            [{"type": "xy"}, {"type": "domain"}]
+            [{"type": "xy"}, {"type": "domain"}]  # "domain" type for pie chart
         ]
     )
     
-    # Daily withdrawal breakdown
+    # Daily reward withdrawals
     fig.add_trace(
         go.Bar(
             x=df["Time"],
-            y=df["Net Withdrawn"],
-            name="Net Withdrawn",
+            y=df["Net Claimed Rewards"],
+            name="Net Claimed",
             marker_color='green'
         ),
         row=1, col=1
@@ -164,56 +229,193 @@ def plot_withdrawal_metrics(df: pd.DataFrame) -> go.Figure:
         row=1, col=1
     )
     
-    # Daily count
+    # Cumulative withdrawals
     fig.add_trace(
         go.Scatter(
             x=df["Time"],
-            y=df["Withdrawal Count"],
-            name="Number of Withdrawals"
-        ),
-        row=1, col=2
-    )
-    
-    # Cumulative
-    fig.add_trace(
-        go.Scatter(
-            x=df["Time"],
-            y=df["Net Withdrawn"].cumsum(),
-            name="Net Withdrawn",
+            y=df["Net Claimed Rewards"].cumsum(),
+            name="Net Claimed (Cum.)",
             line=dict(color='green')
         ),
-        row=2, col=1
+        row=1, col=2
     )
     fig.add_trace(
         go.Scatter(
             x=df["Time"],
             y=df["Haircut Collected"].cumsum(),
-            name="Haircut",
+            name="Haircut (Cum.)",
             line=dict(color='red')
+        ),
+        row=1, col=2
+    )
+    
+    # Average Lock Period over time
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df["Average Lock Period"],
+            name="Avg Lock Period",
+            line=dict(color='blue')
         ),
         row=2, col=1
     )
     
-    # Distribution pie
-    total_net = df["Net Withdrawn"].sum()
+    # Principal vs Reward withdrawals pie chart
+    total_rewards = df["Net Claimed Rewards"].sum()
     total_haircut = df["Haircut Collected"].sum()
+    total_principal = df["Principal Withdrawn"].sum()
     
     fig.add_trace(
         go.Pie(
-            values=[total_net, total_haircut],
-            labels=["Net Withdrawn", "Haircut"],
-            marker=dict(colors=['green', 'red'])
+            values=[total_rewards, total_haircut, total_principal],
+            labels=["Net Rewards", "Haircut", "Principal"],
+            marker=dict(colors=['green', 'red', 'blue'])
         ),
         row=2, col=2
     )
     
     fig.update_layout(
-        height=800,
-        showlegend=True,
+        height=800, 
+        showlegend=True, 
         barmode='stack'
     )
+
+    # Update axes titles
+    fig.update_xaxes(title_text="Time (days)", row=1, col=1)
+    fig.update_xaxes(title_text="Time (days)", row=1, col=2)
+    fig.update_xaxes(title_text="Time (days)", row=2, col=1)
+    
+    fig.update_yaxes(title_text="Amount (SHIFT)", row=1, col=1)
+    fig.update_yaxes(title_text="Cumulative Amount (SHIFT)", row=1, col=2)
+    fig.update_yaxes(title_text="Lock Period (days)", row=2, col=1)
     
     return fig
+
+def plot_milestone_metrics(result, milestone_data: dict) -> go.Figure:
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=[
+            "Lock Period Distribution",
+            "Rewards & Haircuts",
+            "Principal Retention",
+            "Node Activity"
+        ]
+    )
+
+    # Lock period distribution
+    if result.target in milestone_data['active_lock_periods_at_milestone']:
+        lock_periods = milestone_data['active_lock_periods_at_milestone'][result.target]
+        if lock_periods:
+            fig.add_trace(
+                go.Violin(
+                    y=np.concatenate(lock_periods),
+                    name="Lock Periods",
+                    box_visible=True,
+                    line_color='blue'
+                ),
+                row=1, col=1
+            )
+
+    # Rewards and haircuts
+    if result.mean_rewards_haircut is not None:
+        total_rewards = result.mean_treasury + result.mean_rewards_haircut
+        fig.add_trace(
+            go.Pie(
+                values=[result.mean_treasury, result.mean_rewards_haircut],
+                labels=["Net Rewards", "Haircut"],
+                marker=dict(colors=['green', 'red'])
+            ),
+            row=1, col=2
+        )
+
+    # Principal retention
+    times = milestone_data['time_at_milestone'][result.target]
+    principals = milestone_data['locked_principal_at_milestone'][result.target]
+    if times and principals:
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=principals,
+                mode='markers',
+                marker=dict(color='blue'),
+                name='Locked Principal'
+            ),
+            row=2, col=1
+        )
+
+    # Node activity
+    nodes = milestone_data['nodes_at_milestone'][result.target]
+    if times and nodes:
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=nodes,
+                mode='markers',
+                marker=dict(color='orange'),
+                name='Active Nodes'
+            ),
+            row=2, col=2
+        )
+
+    fig.update_layout(height=800, showlegend=False)
+    return fig
+
+def plot_monte_carlo_results(result, milestone_data: dict) -> go.Figure:
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=[
+            f"Time to Reach ${result.target:,.0f}",
+            "Portfolio Composition"
+        ]
+    )
+
+    if result.times_reached > 0:
+        # Time distribution
+        times = milestone_data['time_at_milestone'][result.target]
+        time_points = np.linspace(min(times), max(times), 100)
+        time_kde = stats.gaussian_kde(times)
+        time_density = time_kde(time_points)
+
+        fig.add_trace(
+            go.Scatter(
+                x=time_points,
+                y=time_density,
+                mode='lines',
+                fill='tozeroy',
+                name="Time Distribution"
+            ),
+            row=1, col=1
+        )
+        
+        fig.add_vline(
+            x=result.median_time,
+            line_dash="dash",
+            line_color="green",
+            annotation=dict(
+                text=f"Median: {result.median_time:.1f}d",
+                y=0.8
+            ),
+            row=1, col=1
+        )
+
+        # Portfolio composition
+        if result.locked_principal is not None:
+            fig.add_trace(
+                go.Pie(
+                    values=[
+                        result.locked_principal,
+                        result.mean_treasury,
+                        result.mean_rewards_haircut or 0
+                    ],
+                    labels=["Locked Principal", "Treasury", "Haircuts"],
+                    marker=dict(colors=['blue', 'green', 'red'])
+                ),
+                row=1, col=2
+            )
+
+    fig.update_layout(height=400, showlegend=False)
+    return fig
+
 
 def plot_monte_carlo_results(result, milestone_data: dict) -> go.Figure:
     fig = make_subplots(
@@ -300,7 +502,13 @@ def display_monte_carlo_metrics(result, n_simulations: int) -> str:
     if result.times_reached == 0:
         return f"Success Rate: {(result.times_reached/n_simulations)*100:.1f}%"
     
-    return f"Success Rate: {(result.times_reached/n_simulations)*100:.1f}% | Active Nodes: {result.mean_active_nodes:,.0f}"
+    metrics = [
+        f"Success Rate: {(result.times_reached/n_simulations)*100:.1f}%",
+        f"Active Nodes: {result.mean_active_nodes:,.0f}",
+        f"Avg Lock Period: {result.mean_lock_period:.1f}d" if result.mean_lock_period else ""
+    ]
+    
+    return " | ".join(filter(None, metrics))
 
 def plot_withdrawal_distributions(result, n_simulations: int) -> go.Figure:
     fig = make_subplots(
@@ -311,64 +519,69 @@ def plot_withdrawal_distributions(result, n_simulations: int) -> go.Figure:
         ]
     )
 
-    haircut_points = np.linspace(0, result.mean_treasury * 2, 100)
-    haircut_kde = stats.gaussian_kde([0, result.mean_treasury, result.mean_treasury * 2])
-    haircut_density = haircut_kde(haircut_points)
+    if result.times_reached > 0 and result.mean_treasury is not None:
+        haircut_points = np.linspace(0, result.mean_treasury * 2, 100)
+        haircut_kde = stats.gaussian_kde([0, result.mean_treasury, result.mean_treasury * 2])
+        haircut_density = haircut_kde(haircut_points)
 
-    fig.add_trace(
-        go.Scatter(
-            x=haircut_points,
-            y=haircut_density,
-            mode='lines',
-            fill='tozeroy',
-            name="Haircut Distribution",
-            showlegend=False
-        ),
-        row=1, col=1
-    )
+        fig.add_trace(
+            go.Scatter(
+                x=haircut_points,
+                y=haircut_density,
+                mode='lines',
+                fill='tozeroy',
+                name="Haircut Distribution",
+                showlegend=False
+            ),
+            row=1, col=1
+        )
 
-    # Add mean and median lines for haircut
-    fig.add_vline(
-        x=result.median_treasury,
-        line_dash="dash",
-        line_color="green",
-        annotation=dict(
-            text=f"Median: ${result.median_treasury:,.0f}",
-            y=0.8,
-            yanchor='bottom'
-        ),
-        row=1, col=1
-    )
+        fig.add_vline(
+            x=result.median_treasury,
+            line_dash="dash",
+            line_color="green",
+            annotation=dict(
+                text=f"Median: ${result.median_treasury:,.0f}",
+                y=0.8,
+                yanchor='bottom'
+            ),
+            row=1, col=1
+        )
 
-    # Calculate withdrawal metrics
-    total_withdrawals = result.mean_treasury / (1 - result.haircut_rate)
-    withdrawal_points = np.linspace(0, total_withdrawals * 2, 100)
-    withdrawal_kde = stats.gaussian_kde([0, total_withdrawals, total_withdrawals * 2])
-    withdrawal_density = withdrawal_kde(withdrawal_points)
+        # Calculate total withdrawals with fallback for missing haircut_rate
+        haircut_rate = getattr(result, 'haircut_rate', 0.5)  # Default to 0.5 if not available
+        if haircut_rate is not None and haircut_rate != 1:  # Avoid division by zero
+            total_withdrawals = result.mean_treasury / (1 - haircut_rate)
+        else:
+            total_withdrawals = result.mean_treasury * 2  # Fallback calculation
 
-    fig.add_trace(
-        go.Scatter(
-            x=withdrawal_points,
-            y=withdrawal_density,
-            mode='lines',
-            fill='tozeroy',
-            name="Withdrawals Distribution",
-            showlegend=False
-        ),
-        row=1, col=2
-    )
+        withdrawal_points = np.linspace(0, total_withdrawals * 2, 100)
+        withdrawal_kde = stats.gaussian_kde([0, total_withdrawals, total_withdrawals * 2])
+        withdrawal_density = withdrawal_kde(withdrawal_points)
 
-    fig.add_vline(
-        x=total_withdrawals,
-        line_dash="dash",
-        line_color="green",
-        annotation=dict(
-            text=f"Median: ${total_withdrawals:,.0f}",
-            y=0.8,
-            yanchor='bottom'
-        ),
-        row=1, col=2
-    )
+        fig.add_trace(
+            go.Scatter(
+                x=withdrawal_points,
+                y=withdrawal_density,
+                mode='lines',
+                fill='tozeroy',
+                name="Withdrawals Distribution",
+                showlegend=False
+            ),
+            row=1, col=2
+        )
+
+        fig.add_vline(
+            x=total_withdrawals,
+            line_dash="dash",
+            line_color="green",
+            annotation=dict(
+                text=f"Median: ${total_withdrawals:,.0f}",
+                y=0.8,
+                yanchor='bottom'
+            ),
+            row=1, col=2
+        )
 
     fig.update_layout(
         height=300,
