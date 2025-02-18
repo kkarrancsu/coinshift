@@ -7,6 +7,7 @@ from coinshift import CoinshiftNetwork
 class TVLMilestoneStats:
     target: float
     times_reached: int
+    final_tvl: Optional[float] = None
     min_time: Optional[float] = None
     max_time: Optional[float] = None
     mean_time: Optional[float] = None
@@ -49,6 +50,7 @@ class MonteCarloSimulator:
         self.referral_rewards_at_milestone: Dict[float, List[float]] = {}
         self.haircut_rates_at_milestone: Dict[float, List[float]] = {}
         self.cumulative_rewards_at_milestone: Dict[float, List[float]] = {}
+        self.final_tvl_at_milestone: Dict[float, List[float]] = {}
         
         for goal, _ in self.tvl_goals:
             self.milestone_data[goal] = []
@@ -62,6 +64,7 @@ class MonteCarloSimulator:
             self.referral_rewards_at_milestone[goal] = []
             self.haircut_rates_at_milestone[goal] = []
             self.cumulative_rewards_at_milestone[goal] = []
+            self.final_tvl_at_milestone[goal] = []
         
         self.haircuts_collected_at_milestone = {goal: [] for goal, _ in self.tvl_goals}
         
@@ -139,10 +142,14 @@ class MonteCarloSimulator:
                         self.referral_rewards_at_milestone[goal].append(
                             total_referral_rewards
                         )
+                        self.final_tvl_at_milestone[goal].append(
+                            current_tvl
+                        )
                         
                         # Reset cumulative rewards for next goal
                         cumulative_rewards = 0
                         last_goal_time = step
+                        
                         reached_goals.add(goal)
                 
                 if len(reached_goals) == len(self.tvl_goals):
@@ -178,7 +185,8 @@ class MonteCarloSimulator:
                     locked_principal=float(np.mean(self.locked_principal_at_milestone[goal])),
                     haircut_rate=float(np.mean(haircut_rates)),
                     cumulative_rewards=float(np.mean(self.cumulative_rewards_at_milestone[goal])),
-                    total_haircut_collected=float(np.mean(self.haircuts_collected_at_milestone[goal]))
+                    total_haircut_collected=float(np.mean(self.haircuts_collected_at_milestone[goal])),
+                    final_tvl=float(np.mean(self.final_tvl_at_milestone[goal]))
                 ))
             else:
                 stats.append(TVLMilestoneStats(

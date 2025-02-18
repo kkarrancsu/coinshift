@@ -33,7 +33,7 @@ class TVLOptimizer:
         network_params: dict,
         target_days: int = 90,
         min_success_rate: float = 0.7,
-        n_simulations: int = 100,
+        n_simulations: int = 25,
         max_steps: int = 365,
         min_roi: float = 0.15,
         target_percentile: float = 50,
@@ -94,7 +94,8 @@ class TVLOptimizer:
             'haircuts_collected_at_milestone': self.simulator.haircuts_collected_at_milestone,
             'rewards_haircut_at_milestone': self.simulator.rewards_haircut_at_milestone,
             'total_nodes_at_milestone': self.simulator.total_nodes_at_milestone,
-            'node_trajectories': self.simulator.node_trajectories
+            'node_trajectories': self.simulator.node_trajectories,
+            'final_tvl_at_milestone': self.simulator.final_tvl_at_milestone
         }
 
         metrics = {
@@ -108,7 +109,8 @@ class TVLOptimizer:
             "daily_rewards": daily_shift_rewards,
             "shift_price": shift_price,
             "total_shift_rewards": total_shift_rewards,
-            "shift_penalties": shift_penalties
+            "shift_penalties": shift_penalties,
+            "final_tvl_at_milestone": result.final_tvl
         }
         
         return times, metrics
@@ -117,7 +119,6 @@ class TVLOptimizer:
         self, 
         target_tvl: float, 
         haircut: float,
-        current_tvl: float
     ) -> Tuple[float, Dict[str, float]]:
         times, metrics = self._run_mc_simulation(target_tvl, haircut)
         
@@ -136,33 +137,47 @@ class TVLOptimizer:
         penalty_score = 1 - abs(metrics["penalty_ratio"] - optimal_penalty_ratio)
         
         # Growth reasonableness
-        growth_ratio = target_tvl / current_tvl
-        growth_score = max(0, min(1, 2 - (growth_ratio / 3)))
+        tvl_ratio = target_tvl / metrics["final_tvl_at_milestone"]
+        tvl_error = tvl_ratio - 1.0
+        tvl_score = max(0, 1 - (tvl_error * tvl_error / 4))
         
         # Combined score
         total_score = (
-            time_score * 0.4 +      # Time to reach target
-            roi_score * 0.3 +       # ROI adequacy
+            time_score * 0.2 +      # Time to reach target
+            roi_score * 0.2 +       # ROI adequacy
             penalty_score * 0.2 +   # Penalty effectiveness
-            growth_score * 0.1      # Growth reasonableness
+            tvl_score * 0.4      # Growth reasonableness
         )
         
         return total_score, metrics
 
-    def optimize(self, current_tvl: float) -> OptimizationResult:
+    def optimize(self, current_tvl: float, progress_callback: Callable[[int, int, str], None] = None) -> OptimizationResult:
         best_score = float('-inf')
         best_result = None
         best_metrics = None
         
-        tvl_ratios = np.linspace(1.2, 3.0, 10)
-        haircuts = np.linspace(0.1, 0.9, 9)
+        # tvl_ratios = np.linspace(1.2, 3.0, 10)
+        # haircuts = np.linspace(0.1, 0.9, 9)
+        tvl_ratios = np.asarray([1.2, 1.4, 1.6, 1.8, 2.0])
+        haircuts = np.asarray([0.5, 0.6, 0.7, 0.8, 0.9])
         
-        for _ in range(2):
+        total_iterations = 2 * len(tvl_ratios) * len(haircuts)
+        current_iteration = 0
+        
+        for iteration in range(2):
             for tvl_ratio in tvl_ratios:
                 target_tvl = current_tvl * tvl_ratio
                 
                 for haircut in haircuts:
-                    score, metrics = self._evaluate_combination(target_tvl, haircut, current_tvl)
+                    if progress_callback:
+                        current_iteration += 1
+                        progress_callback(
+                            current_iteration, 
+                            total_iterations,
+                            f"Testing TVL ratio: {tvl_ratio:.2f}, Haircut: {haircut:.2f}"
+                        )
+                        
+                    score, metrics = self._evaluate_combination(target_tvl, haircut)
                     
                     if score > best_score:
                         best_score = score
@@ -179,6 +194,9 @@ class TVLOptimizer:
             raise ValueError("Failed to find valid optimization result")
             
         # Run one final simulation with more samples for better distribution analysis
+        if progress_callback:
+            progress_callback(total_iterations, total_iterations, "Running final detailed analysis...")
+            
         _, final_metrics = self._run_mc_simulation(
             best_result[0], 
             best_result[1],

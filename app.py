@@ -474,8 +474,16 @@ def create_optimization_page(network_params: Dict[str, Any]):
                 **opt_params
             )
             
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            def progress_callback(current: int, total: int, message: str):
+                progress = current / total
+                progress_bar.progress(progress)
+                status_text.text(message)
+            
             with st.spinner("Running optimization..."):
-                result = optimizer.optimize(current_tvl)
+                result = optimizer.optimize(current_tvl, progress_callback)
                 
                 # Display the new visualization
                 fig = plot_optimization_results(result, optimizer.milestone_data)
