@@ -57,7 +57,7 @@ def get_simulation_params() -> SimulationParams:
             )
             initial_nodes = st.number_input(
                 "Initial nodes", 
-                1, 100, 10,
+                10, 1000, 100,
                 help="Starting number of users"
             )
             
@@ -69,7 +69,7 @@ def get_simulation_params() -> SimulationParams:
             ) * 1e6
             total_population = st.number_input(
                 "Total population", 
-                initial_nodes, 10000, 1000,
+                initial_nodes, 50000, 10000,
                 help="Maximum possible users"
             )
 
@@ -116,7 +116,7 @@ def get_simulation_params() -> SimulationParams:
             with col2:
                 max_growth_rate = st.number_input(
                     "Max growth rate",
-                    base_growth_rate, 100.0, 0.1, 1.0,
+                    base_growth_rate, 100.0, 0.1, 0.05,
                     help="Maximum daily growth rate"
                 )
                 growth_steepness = st.number_input(
