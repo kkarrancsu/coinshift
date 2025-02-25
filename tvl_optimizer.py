@@ -1,11 +1,11 @@
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional, Protocol, Callable
+from typing import List, Tuple, Dict, Optional, Callable
 import numpy as np
 from mc import MonteCarloSimulator
 
-class ExchangeRateProvider(Protocol):
+class ExchangeRateProvider:
     def get_rate(self, time: int) -> float:
-        """Returns SHIFT/csUSDL exchange rate at given time"""
+        """Returns token exchange rate at given time"""
         pass
 
 class ConstantExchangeRate:
@@ -22,33 +22,113 @@ class OptimizationResult:
     expected_days: float
     success_rate: float
     confidence_interval: Tuple[float, float]
-    expected_roi: float
-    shift_penalty_ratio: float  # Ratio of penalties to total SHIFT rewards
+    shift_penalty_ratio: float
     avg_daily_rewards: float
     shift_price_at_target: float
+    growth_phase: str
+    estimated_growth_rate: float
+
+class GrowthPhaseEstimator:
+    def __init__(self, network_params: dict, current_time: int):
+        self.params = network_params
+        self.current_time = current_time
+        
+    def estimate_growth_phase(self) -> Tuple[str, float]:
+        """Determine the current growth phase based on time and params"""
+        t = self.current_time
+        t0 = self.params["time_to_peak"]
+        k = self.params["growth_curve_steepness"]
+        initial_rate = self.params["initial_growth_rate"]
+        peak_rate = self.params["peak_growth_rate"]
+        
+        # Calculate current position on the logistic curve
+        logistic_factor = 1 / (1 + np.exp(-k * (t - t0)))
+        current_growth_rate = initial_rate + (peak_rate - initial_rate) * logistic_factor
+        
+        # Apply population constraint
+        total_population = self.params["total_population"]
+        initial_nodes = self.params["initial_nodes"]
+        
+        # Estimate current population based on time
+        # This is a rough estimate; in production you'd use actual node count
+        estimated_population = initial_nodes + \
+            (self.current_time * (initial_rate + current_growth_rate) / 2)
+        estimated_population = min(estimated_population, total_population)
+        
+        population_factor = max(0, (total_population - estimated_population) / total_population)
+        adjusted_growth_rate = current_growth_rate * population_factor
+        
+        # Determine phase based on position relative to peak
+        if t < t0 * 0.5:
+            phase = "Early Growth"
+        elif t < t0 * 0.9:
+            phase = "Accelerating Growth" 
+        elif t < t0 * 1.1:
+            phase = "Peak Growth"
+        elif t < t0 * 1.5:
+            phase = "Decelerating Growth"
+        else:
+            phase = "Maturity"
+            
+        return phase, adjusted_growth_rate
 
 class TVLOptimizer:
     def __init__(
         self,
         network_params: dict,
+        current_time: int = 0,
         target_days: int = 90,
         min_success_rate: float = 0.7,
         n_simulations: int = 25,
         max_steps: int = 365,
-        min_roi: float = 0.15,
         target_percentile: float = 50,
-        exchange_rate_provider: Optional[ExchangeRateProvider] = None
+        exchange_rate_provider: Optional[ExchangeRateProvider] = None,
+        growth_phase_override: Optional[str] = None
     ):
         self.base_params = network_params
+        self.current_time = current_time
         self.target_days = target_days
         self.min_success_rate = min_success_rate
         self.n_simulations = n_simulations
         self.max_steps = max_steps
-        self.min_roi = min_roi
         self.target_percentile = target_percentile
         self.exchange_rate_provider = exchange_rate_provider or ConstantExchangeRate(1.0)
         self.milestone_data = None
         self.simulator = None
+        
+        # Growth phase estimation
+        self.growth_estimator = GrowthPhaseEstimator(network_params, current_time)
+        if growth_phase_override:
+            self.growth_phase = growth_phase_override
+            _, self.estimated_growth_rate = self.growth_estimator.estimate_growth_phase()
+        else:
+            self.growth_phase, self.estimated_growth_rate = self.growth_estimator.estimate_growth_phase()
+            
+    def _get_growth_adjusted_tvl_ratios(self) -> np.ndarray:
+        """Return appropriate TVL ratio ranges based on growth phase"""
+        if self.growth_phase == "Early Growth":
+            return np.asarray([1.1, 1.2, 1.3, 1.4, 1.5])
+        elif self.growth_phase == "Accelerating Growth":
+            return np.asarray([1.3, 1.5, 1.7, 1.9, 2.1])
+        elif self.growth_phase == "Peak Growth":
+            return np.asarray([1.5, 1.8, 2.1, 2.4, 2.7])
+        elif self.growth_phase == "Decelerating Growth":
+            return np.asarray([1.3, 1.5, 1.7, 1.9, 2.0])
+        else:  # Maturity
+            return np.asarray([1.1, 1.2, 1.3, 1.4, 1.5])
+            
+    def _get_growth_adjusted_haircuts(self) -> np.ndarray:
+        """Return appropriate haircut ranges based on growth phase"""
+        if self.growth_phase == "Early Growth":
+            return np.asarray([0.7, 0.75, 0.8, 0.85, 0.9])
+        elif self.growth_phase == "Accelerating Growth":
+            return np.asarray([0.6, 0.65, 0.7, 0.75, 0.8])
+        elif self.growth_phase == "Peak Growth":
+            return np.asarray([0.5, 0.55, 0.6, 0.65, 0.7])
+        elif self.growth_phase == "Decelerating Growth":
+            return np.asarray([0.6, 0.65, 0.7, 0.75, 0.8])
+        else:  # Maturity
+            return np.asarray([0.7, 0.75, 0.8, 0.85, 0.9])
 
     def _run_mc_simulation(
         self, 
@@ -80,7 +160,6 @@ class TVLOptimizer:
         shift_penalties = result.mean_treasury
         rewards_in_csusdl = total_shift_rewards * shift_price
         locked_csusdl = result.locked_principal
-        roi = rewards_in_csusdl / locked_csusdl if locked_csusdl > 0 else 0
         penalty_ratio = shift_penalties / total_shift_rewards if total_shift_rewards > 0 else 0
         avg_timeframe = np.mean(times)
         daily_shift_rewards = total_shift_rewards / avg_timeframe if avg_timeframe > 0 else 0
@@ -89,7 +168,6 @@ class TVLOptimizer:
             'time_at_milestone': self.simulator.milestone_data,
             'nodes_at_milestone': self.simulator.nodes_at_milestone,
             'treasury_at_milestone': self.simulator.treasury_at_milestone,
-            'referral_rewards_at_milestone': self.simulator.referral_rewards_at_milestone,
             'locked_principal_at_milestone': self.simulator.locked_principal_at_milestone,
             'haircuts_collected_at_milestone': self.simulator.haircuts_collected_at_milestone,
             'rewards_haircut_at_milestone': self.simulator.rewards_haircut_at_milestone,
@@ -100,7 +178,6 @@ class TVLOptimizer:
 
         metrics = {
             "success_rate": success_rate,
-            "roi": roi,
             "penalty_ratio": penalty_ratio,
             "mean_time": result.mean_time,
             "median_time": result.median_time,
@@ -129,7 +206,19 @@ class TVLOptimizer:
         
         # Scoring components
         time_score = -abs(time_at_percentile - self.target_days) / self.target_days
-        roi_score = max(0, min(1, metrics["roi"] / self.min_roi - 1))
+        
+        # Adjust scoring based on growth phase
+        growth_multiplier = 1.0
+        if self.growth_phase == "Early Growth":
+            growth_multiplier = 0.9  # More conservative in early growth
+        elif self.growth_phase == "Accelerating Growth":
+            growth_multiplier = 1.1  # More aggressive in accelerating growth
+        elif self.growth_phase == "Peak Growth":
+            growth_multiplier = 1.2  # Most aggressive at peak growth
+        elif self.growth_phase == "Decelerating Growth":
+            growth_multiplier = 1.0  # Balanced in decelerating growth
+        else:  # Maturity
+            growth_multiplier = 0.8  # Most conservative in maturity
         
         # Penalty ratio score - we want sufficient penalties to discourage early withdrawal
         # but not so high that it discourages participation
@@ -141,12 +230,11 @@ class TVLOptimizer:
         tvl_error = tvl_ratio - 1.0
         tvl_score = max(0, 1 - (tvl_error * tvl_error / 4))
         
-        # Combined score
+        # Combined score with growth phase adjustment
         total_score = (
-            time_score * 0.2 +      # Time to reach target
-            roi_score * 0.2 +       # ROI adequacy
-            penalty_score * 0.2 +   # Penalty effectiveness
-            tvl_score * 0.4      # Growth reasonableness
+            time_score * 0.4 * growth_multiplier +  # Time to reach target
+            penalty_score * 0.2 +                   # Penalty effectiveness
+            tvl_score * 0.4                         # Growth reasonableness
         )
         
         return total_score, metrics
@@ -156,10 +244,9 @@ class TVLOptimizer:
         best_result = None
         best_metrics = None
         
-        # tvl_ratios = np.linspace(1.2, 3.0, 10)
-        # haircuts = np.linspace(0.1, 0.9, 9)
-        tvl_ratios = np.asarray([1.2, 1.4, 1.6, 1.8, 2.0])
-        haircuts = np.asarray([0.5, 0.6, 0.7, 0.8, 0.9])
+        # Growth-adjusted values
+        tvl_ratios = self._get_growth_adjusted_tvl_ratios()
+        haircuts = self._get_growth_adjusted_haircuts()
         
         total_iterations = 2 * len(tvl_ratios) * len(haircuts)
         current_iteration = 0
@@ -209,8 +296,9 @@ class TVLOptimizer:
             expected_days=best_metrics["mean_time"],
             success_rate=best_metrics["success_rate"],
             confidence_interval=(best_metrics["p25_time"], best_metrics["p75_time"]),
-            expected_roi=best_metrics["roi"],
             shift_penalty_ratio=best_metrics["penalty_ratio"],
             avg_daily_rewards=best_metrics["daily_rewards"],
-            shift_price_at_target=best_metrics["shift_price"]
+            shift_price_at_target=best_metrics["shift_price"],
+            growth_phase=self.growth_phase,
+            estimated_growth_rate=self.estimated_growth_rate
         )

@@ -18,13 +18,12 @@ class TVLMilestoneStats:
     median_treasury: Optional[float] = None
     mean_active_nodes: Optional[float] = None
     mean_total_nodes: Optional[float] = None
-    mean_referral_rewards: Optional[float] = None
     mean_lock_period: Optional[float] = None
     mean_rewards_haircut: Optional[float] = None
     locked_principal: Optional[float] = None
     haircut_rate: Optional[float] = None
-    cumulative_rewards: Optional[float] = None  # Total SHIFT rewards minted
-    total_haircut_collected: Optional[float] = None  # Total haircuts in treasury
+    cumulative_rewards: Optional[float] = None
+    total_haircut_collected: Optional[float] = None
 
 class MonteCarloSimulator:
     def __init__(
@@ -47,7 +46,6 @@ class MonteCarloSimulator:
         self.rewards_haircut_at_milestone: Dict[float, List[float]] = {}
         self.locked_principal_at_milestone: Dict[float, List[float]] = {}
         self.active_lock_periods_at_milestone: Dict[float, List[List[float]]] = {}
-        self.referral_rewards_at_milestone: Dict[float, List[float]] = {}
         self.haircut_rates_at_milestone: Dict[float, List[float]] = {}
         self.cumulative_rewards_at_milestone: Dict[float, List[float]] = {}
         self.final_tvl_at_milestone: Dict[float, List[float]] = {}
@@ -61,7 +59,6 @@ class MonteCarloSimulator:
             self.rewards_haircut_at_milestone[goal] = []
             self.locked_principal_at_milestone[goal] = []
             self.active_lock_periods_at_milestone[goal] = []
-            self.referral_rewards_at_milestone[goal] = []
             self.haircut_rates_at_milestone[goal] = []
             self.cumulative_rewards_at_milestone[goal] = []
             self.final_tvl_at_milestone[goal] = []
@@ -112,13 +109,11 @@ class MonteCarloSimulator:
                         active_lock_periods = []
                         total_locked_principal = 0
                         total_rewards_haircut = 0
-                        total_referral_rewards = 0
                         
                         for node_id in active_nodes:
                             node = network.nodes[node_id]
                             active_lock_periods.append(node.lock_period)
                             total_locked_principal += node.deposit
-                            total_referral_rewards += node.referral_rewards
                             
                             if node.reward_withdrawal_history:
                                 total_rewards_haircut += sum(
@@ -138,9 +133,6 @@ class MonteCarloSimulator:
                         )
                         self.active_lock_periods_at_milestone[goal].append(
                             active_lock_periods
-                        )
-                        self.referral_rewards_at_milestone[goal].append(
-                            total_referral_rewards
                         )
                         self.final_tvl_at_milestone[goal].append(
                             current_tvl
@@ -181,7 +173,6 @@ class MonteCarloSimulator:
                     mean_total_nodes=float(np.mean(self.total_nodes_at_milestone[goal])),
                     mean_lock_period=float(np.mean(self.lock_periods_at_milestone[goal])),
                     mean_rewards_haircut=float(np.mean(self.rewards_haircut_at_milestone[goal])),
-                    mean_referral_rewards=float(np.mean(self.referral_rewards_at_milestone[goal])),
                     locked_principal=float(np.mean(self.locked_principal_at_milestone[goal])),
                     haircut_rate=float(np.mean(haircut_rates)),
                     cumulative_rewards=float(np.mean(self.cumulative_rewards_at_milestone[goal])),

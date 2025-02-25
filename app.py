@@ -12,35 +12,26 @@ from viz import (
     plot_optimization_results
 )
 
-import streamlit as st
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any
-from tvl_optimizer import TVLOptimizer, ConstantExchangeRate
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
+from tvl_optimizer import TVLOptimizer, ConstantExchangeRate, GrowthPhaseEstimator
 
 @dataclass
 class SimulationParams:
     n_steps: int
     initial_nodes: int
     total_population: int
-    # Growth parameters (both models)
-    referral_bonus: float
-    # Original growth model params
-    referral_rate: float
-    spontaneous_rate: float
-    # New growth model params
-    base_growth_rate: float
-    max_growth_rate: float
-    growth_inflection_point: int
-    growth_steepness: float
-    # Rest of params
+    # Simplified growth model parameters
+    initial_growth_rate: float
+    peak_growth_rate: float
+    time_to_peak: int
+    growth_curve_steepness: float
+    # Rewards and Withdrawal parameters
     hyperbolic_scale: float
     reward_withdrawal_prob: float
     principal_withdrawal_prob: float
     min_deposit: float
     max_deposit: float
-    referral_pool: float
     tvl_goals: List[Tuple[float, float]]
     starting_tvl: float
 
@@ -74,58 +65,31 @@ def get_simulation_params() -> SimulationParams:
             )
 
         st.header("Growth Model Parameters")
-        referral_bonus = st.number_input(
-            "Referral bonus %", 
-            0.0, 100.0, 0.0, 0.1,
-            help="Set to 0 to use S-curve growth model, >0 for referral growth model"
-        ) / 100
-
-        if referral_bonus > 0:
-            # Show original growth model params
-            col1, col2 = st.columns(2)
-            with col1:
-                referral_rate = st.number_input(
-                    "Referral rate", 
-                    0.0, 1.0, 0.05, 0.01,
-                    help="New users per existing user per day"
-                )
-            with col2:
-                spontaneous_rate = st.number_input(
-                    "Spontaneous rate", 
-                    0.0, 10.0, 2.0, 0.1,
-                    help="Organic new users per day"
-                )
-            base_growth_rate = 0  # Default values for unused params
-            max_growth_rate = 0
-            growth_inflection_point = 0
-            growth_steepness = 0
-        else:
-            # Show new S-curve growth model params
-            col1, col2 = st.columns(2)
-            with col1:
-                base_growth_rate = st.number_input(
-                    "Base growth rate",
-                    0.0, 50.0, 0.05, 0.05,
-                    help="Initial daily growth rate"
-                )
-                growth_inflection_point = st.number_input(
-                    "Growth inflection point",
-                    1, 1000, 180,
-                    help="Day at which growth accelerates"
-                )
-            with col2:
-                max_growth_rate = st.number_input(
-                    "Max growth rate",
-                    base_growth_rate, 100.0, 0.1, 0.05,
-                    help="Maximum daily growth rate"
-                )
-                growth_steepness = st.number_input(
-                    "Growth steepness",
-                    0.01, 1.0, 0.01, 0.01,
-                    help="How quickly growth transitions from base to max rate"
-                )
-            referral_rate = 0  # Default values for unused params
-            spontaneous_rate = 0
+        st.markdown("Configure the network growth S-curve")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            initial_growth_rate = st.number_input(
+                "Initial growth rate",
+                0.1, 100.0, 2.0, 0.1,
+                help="New users per day at the start"
+            )
+            time_to_peak = st.number_input(
+                "Time to peak growth (days)",
+                1, 1000, 180,
+                help="When growth rate reaches halfway to peak"
+            )
+        with col2:
+            peak_growth_rate = st.number_input(
+                "Peak growth rate",
+                initial_growth_rate, 1000.0, 20.0, 1.0,
+                help="Maximum new users per day"
+            )
+            growth_curve_steepness = st.number_input(
+                "Growth curve steepness",
+                0.001, 1.0, 0.05, 0.01,
+                help="How quickly growth transitions from initial to peak rate"
+            )
 
         st.header("Other Parameters")
         col1, col2 = st.columns(2)
@@ -151,22 +115,15 @@ def get_simulation_params() -> SimulationParams:
         min_deposit = st.number_input(
             "Min deposit", 
             0.0, 1e6, 100.0, 100.0,
-            help="Minimum csUSDL deposit"
+            help="Minimum deposit amount"
         )
         max_deposit = st.number_input(
             "Max deposit", 
             min_deposit, 1e8, 1000.0, 1000.0,
-            help="Maximum csUSDL deposit"
+            help="Maximum deposit amount"
         )
 
-        st.header("Referral Pool")
-        referral_pool = st.number_input(
-            "Total referral bonus pool (SHIFT)", 
-            0.0, 1e8, 1_000_000.0, 100_000.0,
-            help="Total SHIFT for referral bonuses"
-        )
-
-        # TVL Goals section remains unchanged
+        # TVL Goals section
         st.header("TVL Goals")
         num_goals = st.number_input(
             "Number of TVL goals", 
@@ -208,44 +165,36 @@ def get_simulation_params() -> SimulationParams:
         n_steps=n_steps,
         initial_nodes=initial_nodes,
         total_population=total_population,
-        referral_bonus=referral_bonus,
-        referral_rate=referral_rate,
-        spontaneous_rate=spontaneous_rate,
-        base_growth_rate=base_growth_rate,
-        max_growth_rate=max_growth_rate,
-        growth_inflection_point=growth_inflection_point,
-        growth_steepness=growth_steepness,
+        initial_growth_rate=initial_growth_rate,
+        peak_growth_rate=peak_growth_rate,
+        time_to_peak=time_to_peak,
+        growth_curve_steepness=growth_curve_steepness,
         hyperbolic_scale=hyperbolic_scale,
         reward_withdrawal_prob=reward_withdrawal_prob,
         principal_withdrawal_prob=principal_withdrawal_prob,
         min_deposit=min_deposit,
         max_deposit=max_deposit,
-        referral_pool=referral_pool,
         tvl_goals=tvl_goals,
         starting_tvl=starting_tvl
     )
 
 def get_network_params(params: SimulationParams) -> Dict[str, Any]:
-    # print(f"Starting TVL being passed to network: {params.starting_tvl:,.2f}")
     return {
-        "referral_rate": params.referral_rate,
-        "spontaneous_rate": params.spontaneous_rate,
-        "base_growth_rate": params.base_growth_rate,
-        "max_growth_rate": params.max_growth_rate,
-        "growth_inflection_point": params.growth_inflection_point,
-        "growth_steepness": params.growth_steepness,
+        "initial_growth_rate": params.initial_growth_rate,
+        "peak_growth_rate": params.peak_growth_rate,
+        "time_to_peak": params.time_to_peak,
+        "growth_curve_steepness": params.growth_curve_steepness,
         "initial_nodes": params.initial_nodes,
         "total_population": params.total_population,
         "tvl_goals": params.tvl_goals,
         "min_deposit": params.min_deposit,
         "max_deposit": params.max_deposit,
-        "referral_bonus_pct": params.referral_bonus,
         "hyperbolic_scale": params.hyperbolic_scale,
         "reward_withdrawal_prob": params.reward_withdrawal_prob,
         "principal_withdrawal_prob": params.principal_withdrawal_prob,
-        "total_referral_bonus_pool": params.referral_pool,
         "starting_tvl": params.starting_tvl
     }
+
 
 def get_monte_carlo_params(base_params: SimulationParams) -> Dict[str, Any]:
     col1, col2 = st.columns(2)
@@ -279,9 +228,6 @@ def get_monte_carlo_params(base_params: SimulationParams) -> Dict[str, Any]:
 def run_single_simulation(network_params: dict, n_steps: int):
     sim = CoinshiftNetwork(**network_params)
     
-    print(f"Initial TVL: {sim.calculate_tvl()}")
-    print(f"Initial TVL history: {sim.tvl_history}")
-    
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -293,19 +239,15 @@ def run_single_simulation(network_params: dict, n_steps: int):
         "Treasury": [sim.treasury_history[0]],
         "Haircut": [sim.haircut_history[0]],
         "Rewards": [sim.rewards_history[0]],
-        "Referral Rewards": [sim.referral_rewards_history[0]],
         "Withdrawal Count": [sim.withdrawal_count_history[0]],
         "Haircut Collected": [sim.total_haircut_collected_history[0]],
         "Net Claimed Rewards": [sim.net_claimed_rewards_history[0]],
-        "Remaining Referral Pool": [sim.referral_bonus_history[0]],
         "Principal Withdrawn": [0],
         "Average Lock Period": [
             sum(sim.nodes[n].lock_period for n in sim.get_active_nodes()) / len(sim.get_active_nodes())
             if sim.get_active_nodes() else 0
         ]
     }
-    
-    print(f"First data point - Time: {data['Time'][0]}, TVL: {data['TVL'][0]}")
     
     for step in range(n_steps):
         sim.step()
@@ -319,11 +261,9 @@ def run_single_simulation(network_params: dict, n_steps: int):
         data["Treasury"].append(sim.treasury_history[-1])
         data["Haircut"].append(sim.haircut_history[-1])
         data["Rewards"].append(sim.rewards_history[-1])
-        data["Referral Rewards"].append(sim.referral_rewards_history[-1])
         data["Withdrawal Count"].append(sim.withdrawal_count_history[-1])
         data["Haircut Collected"].append(sim.total_haircut_collected_history[-1])
         data["Net Claimed Rewards"].append(sim.net_claimed_rewards_history[-1])
-        data["Remaining Referral Pool"].append(sim.referral_bonus_history[-1])
         
         active_nodes = sim.get_active_nodes()
         if active_nodes:
@@ -392,7 +332,6 @@ def run_monte_carlo_simulation(mc_params: dict):
             'nodes_at_milestone': simulator.nodes_at_milestone,
             'treasury_at_milestone': simulator.treasury_at_milestone,
             'time_at_milestone': simulator.milestone_data,
-            'referral_rewards_at_milestone': simulator.referral_rewards_at_milestone
         }
         
     for result in results:
@@ -414,7 +353,7 @@ def run_monte_carlo_simulation(mc_params: dict):
                 fig = plot_milestone_metrics(result, milestone_data)
                 st.plotly_chart(fig, use_container_width=True)
 
-def get_optimization_params() -> Dict[str, Any]:
+def get_optimization_params(params: SimulationParams) -> Dict[str, Any]:
     st.header("Optimization Parameters")
     
     col1, col2 = st.columns(2)
@@ -437,30 +376,79 @@ def get_optimization_params() -> Dict[str, Any]:
     
     with col2:
         shift_rate = st.number_input(
-            "SHIFT/csUSDL Rate",
+            "Token Exchange Rate",
             min_value=0.01,
             max_value=100.0,
             value=1.0,
-            help="Exchange rate between SHIFT and csUSDL"
+            help="Exchange rate"
         )
-        min_roi = st.number_input(
-            "Minimum ROI",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.15,
-            step=0.05,
-            help="Minimum required ROI"
+        
+        # Add current day parameter
+        current_day = st.number_input(
+            "Current Day",
+            min_value=0,
+            max_value=params.n_steps,
+            value=0,
+            help="Current day in the simulation (affects growth phase)"
         )
+    
+    # Add growth phase override
+    st.subheader("Growth Phase")
+    use_auto_detection = st.checkbox(
+        "Auto-detect growth phase", 
+        value=True,
+        help="Automatically determine growth phase based on current day"
+    )
+    
+    growth_phase_override = None
+    if not use_auto_detection:
+        growth_phase_override = st.selectbox(
+            "Override Growth Phase",
+            options=[
+                "Early Growth", 
+                "Accelerating Growth", 
+                "Peak Growth", 
+                "Decelerating Growth", 
+                "Maturity"
+            ],
+            help="Manually select the network growth phase"
+        )
+        
+        # Add visual indication of selected phase
+        st.write("Selected growth phase parameters:")
+        
+        phase_info = {
+            "Early Growth": {"tvl_range": "10-50%", "haircut_range": "70-90%", "aggressiveness": "Conservative"},
+            "Accelerating Growth": {"tvl_range": "30-110%", "haircut_range": "60-80%", "aggressiveness": "Moderate"},
+            "Peak Growth": {"tvl_range": "50-170%", "haircut_range": "50-70%", "aggressiveness": "Aggressive"},
+            "Decelerating Growth": {"tvl_range": "30-100%", "haircut_range": "60-80%", "aggressiveness": "Moderate"},
+            "Maturity": {"tvl_range": "10-50%", "haircut_range": "70-90%", "aggressiveness": "Conservative"}
+        }
+        
+        selected_info = phase_info[growth_phase_override]
+        cols = st.columns(3)
+        cols[0].metric("Target TVL Increase", selected_info["tvl_range"])
+        cols[1].metric("Haircut Range", selected_info["haircut_range"])
+        cols[2].metric("Strategy", selected_info["aggressiveness"])
+        
+    # Display estimated growth phase if using auto-detection
+    if use_auto_detection and current_day > 0:
+        network_params = get_network_params(params)
+        estimator = GrowthPhaseEstimator(network_params, current_day)
+        detected_phase, growth_rate = estimator.estimate_growth_phase()
+        
+        st.info(f"Detected growth phase: **{detected_phase}** (Est. growth rate: {growth_rate:.2f} nodes/day)")
         
     return {
         "target_days": target_days,
         "min_success_rate": min_success_rate,
-        "min_roi": min_roi,
-        "exchange_rate_provider": ConstantExchangeRate(shift_rate)
+        "exchange_rate_provider": ConstantExchangeRate(shift_rate),
+        "current_time": current_day,
+        "growth_phase_override": growth_phase_override
     }
 
-def create_optimization_page(network_params: Dict[str, Any]):
-    opt_params = get_optimization_params()
+def create_optimization_page(network_params: Dict[str, Any], params: SimulationParams):
+    opt_params = get_optimization_params(params)
     
     current_tvl = network_params.get("starting_tvl", 0)
     if current_tvl == 0:
@@ -485,28 +473,42 @@ def create_optimization_page(network_params: Dict[str, Any]):
             with st.spinner("Running optimization..."):
                 result = optimizer.optimize(current_tvl, progress_callback)
                 
-                # Display the new visualization
                 fig = plot_optimization_results(result, optimizer.milestone_data)
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # Display raw data in expandable section without formatting
+                with st.expander("Optimization Results Summary"):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Growth Phase", result.growth_phase)
+                        st.metric("Target TVL", f"${result.target_tvl/1e6:.2f}M")
+                        st.metric("Success Rate", f"{result.success_rate*100:.1f}%")
+                    with col2:
+                        st.metric("Haircut", f"{result.haircut*100:.1f}%")
+                        st.metric("Expected Days", f"{result.expected_days:.1f}")
+                        st.metric("Confidence Interval", f"{result.confidence_interval[0]:.1f}-{result.confidence_interval[1]:.1f} days")
+                    with col3:
+                        st.metric("TVL Increase", f"{(result.target_tvl/current_tvl - 1)*100:.1f}%")
+                        st.metric("Penalty Ratio", f"{result.shift_penalty_ratio*100:.1f}%")
+                        st.metric("Est. Growth Rate", f"{result.estimated_growth_rate:.2f} nodes/day")
+                
                 with st.expander("Raw Optimization Results"):
                     st.json({
                         "target_tvl": result.target_tvl,
                         "haircut": result.haircut,
                         "expected_days": result.expected_days,
                         "success_rate": result.success_rate,
-                        "expected_roi": result.expected_roi,
                         "shift_penalty_ratio": result.shift_penalty_ratio,
-                        "avg_daily_rewards": result.avg_daily_rewards
+                        "avg_daily_rewards": result.avg_daily_rewards,
+                        "growth_phase": result.growth_phase,
+                        "estimated_growth_rate": result.estimated_growth_rate
                     })
             
         except Exception as e:
             st.error(f"Optimization failed: {str(e)}")
             raise e
-
+        
 if __name__ == "__main__":
-    st.set_page_config(page_title="Coinshift Network Simulation", layout="wide")
+    st.set_page_config(page_title="Network Simulation", layout="wide")
     
     tab1, tab2, tab3 = st.tabs([
         "Single Simulation", 
@@ -528,4 +530,4 @@ if __name__ == "__main__":
             
     with tab3:
         network_params = get_network_params(params)
-        create_optimization_page(network_params)
+        create_optimization_page(network_params, params)
